@@ -249,394 +249,423 @@
   <div class="toast" id="toast"></div>
 
   <script>
-    // base API
-const API_URL = 'https://oder-gjta.onrender.com'; // backend base
+    /*
+  Full client-side script (server-backed) for Orders app
+  - Uses API at API_URL to GET/POST/PUT/DELETE orders
+  - Falls back to localStorage when offline
+  - Polls server every 5s for live updates (configurable)
+  - Uses BroadcastChannel to sync between tabs (same origin)
+  - Expects server `orders` to contain unique id field `_id` or `id`
 
-// loadOrders -> GET /orders
-async function loadOrders() {
-  const res = await fetch(`${API_URL}/orders`);
-  const orders = await res.json();
-  console.log('Orders:', orders);
-  // render orders into store.list বা direct use
+  Usage: include this file in your HTML after the DOM elements exist.
+*/
+
+// ====== Config ======
+const API_URL = 'https://oder-gjta.onrender.com'; // change if needed
+const POLL_INTERVAL_MS = 5000; // set to 0 to disable polling
+const STORE_KEY = 'orders_store_v4_with_amount';
+
+// ====== Helpers ======
+function log(...args){ console.log('[ORDERS]', ...args); }
+function toast(msg){
+  const t = document.getElementById('toast');
+  if(!t) return console.warn('No toast element');
+  const item = document.createElement('div');
+  item.className = 'item';
+  item.textContent = msg;
+  t.appendChild(item);
+  setTimeout(()=>{ item.style.opacity = '0'; item.style.transform = 'translateY(6px)'; }, 2400);
+  setTimeout(()=>{ item.remove(); }, 3000);
 }
 
-// saveOrder -> POST /orders
-async function saveOrder(order) {
-  const res = await fetch(`${API_URL}/orders`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(order)
-  });
+function fmtDate(ts){ if(!ts) return ''; const d=new Date(ts); const pad=n=>n.toString().padStart(2,'0'); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+function autoId(){ const d=new Date(); const pad=n=>n.toString().padStart(2,'0'); return `YY-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; }
+function escapeHtml(str){ return String(str||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
+function formatCurrency(v){ if(v === '' || v === null || v === undefined || isNaN(+v)) return ''; const n=Number(v); return `৳ ${n.toFixed(2)}`; }
+function hexToRgba(hex, alpha){ if(!hex) return `rgba(0,0,0,${alpha})`; const h=hex.replace('#',''); const bigint=parseInt(h,16); const r=(bigint>>16)&255; const g=(bigint>>8)&255; const b=bigint&255; return `rgba(${r},${g},${b},${alpha})`; }
+
+// ====== Local store (fallback + caching) ======
+const store = {
+  list: [],
+  load(){ try{ this.list = JSON.parse(localStorage.getItem(STORE_KEY)) || []; }catch{ this.list = []; } },
+  save(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(this.list)); }catch(e){ console.warn('localStorage save failed', e); } },
+  upsertByIndex(index,item){ if(index === '' || index === null || index === undefined){ this.list.push(item); } else { this.list[index] = item; } this.save(); },
+  removeByIndex(index){ this.list.splice(index,1); this.save(); },
+  clear(){ this.list = []; this.save(); }
+};
+
+// ====== Network: Server CRUD ======
+async function fetchJson(url, opts){
+  const res = await fetch(url, opts);
+  if(!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
-  console.log('Saved:', data);
-  loadOrders();
+  return data;
 }
 
-// updateOrder -> PUT /orders/:id
-async function updateOrder(id, order) {
-  const res = await fetch(`${API_URL}/orders/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(order)
-  });
-  const data = await res.json();
-  console.log('Updated:', data);
-  loadOrders();
+async function loadOrdersFromServer(){
+  const url = `${API_URL}/orders`;
+  const data = await fetchJson(url);
+  if(!Array.isArray(data)) throw new Error('Server returned non-array');
+  // Normalize: ensure each item has consistent id field
+  return data.map(item => ({ ...item }));
 }
 
-// deleteOrder -> DELETE /orders/:id
-async function deleteOrder(id) {
-  const res = await fetch(`${API_URL}/orders/${id}`, { method: 'DELETE' });
-  const data = await res.json();
-  console.log(data.message);
-  loadOrders();
+async function createOrderOnServer(order){
+  const url = `${API_URL}/orders`;
+  const created = await fetchJson(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(order) });
+  return created;
 }
 
-    // ===== Utility: Toast =====
-    function toast(msg){
-      const t = document.getElementById('toast');
-      const item = document.createElement('div');
-      item.className = 'item';
-      item.textContent = msg;
-      t.appendChild(item);
-      setTimeout(()=>{ item.style.opacity = '0'; item.style.transform = 'translateY(6px)'; }, 2400);
-      setTimeout(()=>{ item.remove(); }, 3000);
-    }
+async function updateOrderOnServer(id, order){
+  const url = `${API_URL}/orders/${encodeURIComponent(id)}`;
+  const updated = await fetchJson(url, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(order) });
+  return updated;
+}
 
-    // ===== Store =====
-    const STORE_KEY = 'orders_store_v4_with_amount';
-    const store = {
-      list: [],
-      load(){ try { this.list = JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch { this.list = []; } },
-      save(){ localStorage.setItem(STORE_KEY, JSON.stringify(this.list)); },
-      upsert(index, item){ 
-        if(index === '' || index === null || index === undefined){ this.list.push(item); }
-        else { this.list[index] = item; }
-        this.save();
-      },
-      remove(index){ this.list.splice(index,1); this.save(); },
-      clear(){ this.list = []; this.save(); }
-    };
+async function deleteOrderOnServer(id){
+  const url = `${API_URL}/orders/${encodeURIComponent(id)}`;
+  const resp = await fetchJson(url, { method: 'DELETE' });
+  return resp;
+}
 
-    // ===== State =====
-    let state = { sortKey: 'createdAt', sortDir: 'desc', page:1, pageSize:10, query:'' };
+// ====== Rendering (same as your original but using store.list) ======
+let state = { sortKey: 'createdAt', sortDir: 'desc', page:1, pageSize:10, query: '' };
 
-    // ===== Helpers =====
-    function fmtDate(ts){
-      if(!ts) return '';
-      const d = new Date(ts);
-      const pad = n => n.toString().padStart(2,'0');
-      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-    }
+function computeCounts(list){ const counts = {}; list.forEach(r => { const k = (r.orderId||'').toString(); counts[k] = (counts[k]||0) + 1; }); return counts; }
 
-    function autoId(){
-      const d = new Date();
-      const pad = n => n.toString().padStart(2,'0');
-      return `YY-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-    }
-
-    function escapeHtml(str){ return String(str||'').replace(/[&<>"]|'/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#039;"})[m]); }
-
-    function formatCurrency(v){
-      if(v === '' || v === null || v === undefined || isNaN(+v)) return '';
-      const n = Number(v);
-      return `৳ ${n.toFixed(2)}`;
-    }
-
-    // convert hex like #rrggbb to rgba string with alpha
-    function hexToRgba(hex, alpha){
-      if(!hex) return `rgba(0,0,0,${alpha})`;
-      const h = hex.replace('#','');
-      const bigint = parseInt(h,16);
-      const r = (bigint >> 16) & 255;
-      const g = (bigint >> 8) & 255;
-      const b = bigint & 255;
-      return `rgba(${r},${g},${b},${alpha})`;
-    }
-
-    // ===== Render =====
-    function render(){
-      const q = state.query.toLowerCase();
-
-      // compute counts per orderId (global)
-      const counts = {};
-      store.list.forEach(r => { const k = (r.orderId||'').toString(); counts[k] = (counts[k]||0) + 1; });
-
-      const filtered = store.list.map((x, idx) => ({...x, _idx: idx}))
-        .filter(row => {
-          return (
-            (row.name||'').toString().toLowerCase().includes(q) ||
-            (row.orderName||'').toString().toLowerCase().includes(q) ||
-            (row.orderId||'').toString().toLowerCase().includes(q) ||
-            (row.phone||'').toString().toLowerCase().includes(q) ||
-            (row.school||'').toString().toLowerCase().includes(q)
-          );
-        });
-
-      filtered.sort((a,b)=>{
-        const k = state.sortKey;
-        let va = a[k] !== undefined ? a[k] : '';
-        let vb = b[k] !== undefined ? b[k] : '';
-        if(typeof va === 'string') va = va.toLowerCase();
-        if(typeof vb === 'string') vb = vb.toLowerCase();
-        if(va > vb) return state.sortDir === 'asc' ? 1 : -1;
-        if(va < vb) return state.sortDir === 'asc' ? -1 : 1;
-        return 0;
-      });
-
-      const total = filtered.length;
-      const pages = Math.max(1, Math.ceil(total / state.pageSize));
-      if(state.page > pages) state.page = pages;
-      const start = (state.page - 1) * state.pageSize;
-      const rows = filtered.slice(start, start + state.pageSize);
-
-      const tbody = document.querySelector('#dataTable tbody');
-      tbody.innerHTML = '';
-
-      rows.forEach((row, i) => {
-        const tr = document.createElement('tr');
-        const countForId = counts[(row.orderId||'').toString()] || 0;
-
-        // // Determine bucket: every 10 items gets its own bucket and unique color
-        // bucketIndex: 10-19 => 0, 20-29 => 1, 30-39 => 2, ...
-        if(countForId >= 10){
-          const bucketIndex = Math.floor((countForId - 10) / 10);
-          const palette = [
-            '#ef4444', // red
-            '#10b981', // green
-            '#f59e0b', // amber
-            '#7c3aed', // violet
-            '#06b6d4', // cyan
-            '#f97316', // orange
-            '#db2777', // pink
-            '#0ea5e9', // sky
-            '#8b5cf6', // purple
-            '#16a34a'  // emerald
-          ];
-          const color = palette[bucketIndex % palette.length];
-
-          // apply styles inline so each bucket gets a distinct color
-          tr.classList.add('over-limit');
-          tr.style.borderLeft = `4px solid ${color}`;
-          tr.style.background = `linear-gradient(90deg, ${hexToRgba(color,0.06)}, ${hexToRgba(color,0.03)})`;
-        }
-
-        const amountDisplay = formatCurrency(row.amount);
-
-        tr.innerHTML = `
-          <td>${start + i + 1}</td>
-          <td><span class="pill">${escapeHtml(row.name)}</span></td>
-          <td>${escapeHtml(row.orderName || '')}</td>
-          <td>${amountDisplay}</td>
-          <td>${escapeHtml(row.phone)}</td>
-          <td>${escapeHtml(row.school)}</td>
-          <td class="order-id">${escapeHtml(row.orderId)}${countForId>1? ' • '+countForId+ ' টি':''}</td>
-          <td>${row.orderDateTime ? fmtDate(row.orderDateTime) : ''}</td>
-          <td class="hide-sm">${row.createdAt ? fmtDate(row.createdAt) : ''}</td>
-          <td class="actions">
-            <button class="btn btn-success" onclick="edit(${row._idx})">এডিট</button>
-            <button class="btn btn-danger" onclick="remove(${row._idx})">ডিলিট</button>
-          </td>
-        `;
-
-        // after setting innerHTML, apply order-id color if over-limit
-        const orderTd = tr.querySelector('.order-id');
-        if(orderTd && countForId >= 10){
-          const bucketIndex = Math.floor((countForId - 10) / 10);
-          const palette = ['#ef4444','#10b981','#f59e0b','#7c3aed','#06b6d4','#f97316','#db2777','#0ea5e9','#8b5cf6','#16a34a'];
-          const color = palette[bucketIndex % palette.length];
-          orderTd.style.color = color;
-          orderTd.style.fontWeight = '700';
-        }
-
-        tbody.appendChild(tr);
-      });
-
-      // pagination
-      const pg = document.getElementById('pagination');
-      pg.innerHTML = '';
-      const info = document.createElement('div');
-      info.style.marginRight = 'auto';
-      info.style.alignSelf = 'center';
-      info.style.color = 'var(--muted)';
-      info.textContent = `পেজ ${state.page}/${pages} • মোট ${total}`;
-      pg.appendChild(info);
-      const prev = document.createElement('button');
-      prev.className = 'page-btn';
-      prev.textContent = 'পূর্ববর্তী';
-      prev.disabled = state.page <= 1;
-      prev.onclick = ()=>{ if(state.page>1){ state.page--; render(); } };
-      const next = document.createElement('button');
-      next.className = 'page-btn';
-      next.textContent = 'পরবর্তী';
-      next.disabled = state.page >= pages;
-      next.onclick = ()=>{ if(state.page<pages){ state.page++; render(); } };
-      pg.appendChild(prev);
-      pg.appendChild(next);
-    }
-
-    // ===== Edit / Remove =====
-    function edit(idx){
-      const row = store.list[idx];
-      document.getElementById('name').value = row.name;
-      document.getElementById('phone').value = row.phone || '';
-      document.getElementById('school').value = row.school || '';
-      document.getElementById('orderId').value = row.orderId || '';
-      document.getElementById('orderName').value = row.orderName || '';
-      document.getElementById('amount').value = row.amount !== undefined ? row.amount : '';
-      document.getElementById('editingIndex').value = idx;
-      const pv = document.getElementById('orderPreview');
-      pv.textContent = row.orderDateTime ? `অর্ডারের সময় (সংরক্ষিত): ${fmtDate(row.orderDateTime)}` : '';
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-    }
-
-    function remove(idx){
-      if(confirm('নিশ্চিতভাবে মুছতে চাও?')){
-        store.remove(idx);
-        render();
-        toast('মুছে ফেলা হয়েছে 🗑️');
-      }
-    }
-
-    // ===== Events =====
-    document.getElementById('orderForm').addEventListener('submit', (e)=>{
-      e.preventDefault();
-      const name = document.getElementById('name').value.trim();
-      const phone = document.getElementById('phone').value.trim();
-      const school = document.getElementById('school').value.trim();
-      const orderId = document.getElementById('orderId').value.trim();
-      const orderName = document.getElementById('orderName').value.trim();
-      const amountVal = document.getElementById('amount').value;
-      const amount = amountVal === '' ? 0 : Number(amountVal);
-      const editingIndex = document.getElementById('editingIndex').value;
-
-      if(!name) { toast('নাম প্রয়োজন'); return; }
-      if(!phone) { toast('ফোন প্রয়োজন'); return; }
-      if(!school) { toast('বিদ্যালয়ের নাম প্রয়োজন'); return; }
-      if(!orderId) { toast('আইডি প্রয়োজন'); return; }
-      if(!orderName) { toast('অর্ডারের নাম প্রয়োজন'); return; }
-      if(isNaN(amount) || amount < 0){ toast('সঠিক টাকা প্রবেশ করাও'); return; }
-
-      // orderDateTime: auto-set for NEW; for EDIT keep previous saved orderDateTime
-      let orderDateTime = Date.now();
-      if(editingIndex !== ''){
-        const prev = store.list[+editingIndex];
-        orderDateTime = prev && prev.orderDateTime ? prev.orderDateTime : Date.now();
-      }
-
-      const item = {
-        name,
-        phone,
-        school,
-        orderId,
-        orderName,
-        amount,
-        orderDateTime,
-        createdAt: Date.now()
-      };
-
-      if(editingIndex !== ''){
-        // preserve original createdAt if present
-        item.createdAt = store.list[+editingIndex]?.createdAt || item.createdAt;
-      }
-
-      store.upsert(editingIndex !== '' ? +editingIndex : '', item);
-      toast(editingIndex !== '' ? 'আপডেট সম্পন্ন ✅' : 'সংরক্ষণ সম্পন্ন ✅');
-      e.target.reset();
-      document.getElementById('editingIndex').value = '';
-      document.getElementById('orderPreview').textContent = '';
-      render();
-    });
-
-    document.getElementById('btnClearForm').addEventListener('click', ()=>{
-      document.getElementById('orderForm').reset();
-      document.getElementById('editingIndex').value = '';
-      document.getElementById('orderPreview').textContent = '';
-      toast('ফর্ম ক্লিয়ার হয়েছে');
-    });
-
-    document.getElementById('btnAutoId').addEventListener('click', ()=>{ document.getElementById('orderId').value = autoId(); toast('Auto ID সেট হয়েছে'); });
-
-    document.getElementById('search').addEventListener('input', (e)=>{ state.query = e.target.value; state.page = 1; render(); });
-    document.getElementById('pageSize').addEventListener('change', (e)=>{ state.pageSize = +e.target.value; state.page = 1; render(); });
-
-    document.getElementById('btnClearAll').addEventListener('click', ()=>{
-      if(confirm('সব ডাটা স্থায়ীভাবে মুছে যাবে। নিশ্চিত?')){
-        store.clear();
-        render();
-        toast('সব ডাটা মুছে ফেলা হয়েছে');
-      }
-    });
-
-    // ===== Export CSV =====
-    document.getElementById('btnExport').addEventListener('click', ()=>{
-      const rows = [["name","phone","school","order_name","amount","order_id","order_datetime","created_at"]].concat(
-        store.list.map(r=>[
-          r.name, r.phone, r.school, r.orderName, r.amount, r.orderId,
-          r.orderDateTime ? new Date(r.orderDateTime).toISOString() : '',
-          r.createdAt ? new Date(r.createdAt).toISOString() : ''
-        ])
+function render(){
+  const q = state.query.toLowerCase();
+  const counts = computeCounts(store.list);
+  const filtered = store.list.map((x, idx) => ({...x, _idx: idx}))
+    .filter(row => {
+      return (
+        (row.name||'').toString().toLowerCase().includes(q) ||
+        (row.orderName||'').toString().toLowerCase().includes(q) ||
+        (row.orderId||'').toString().toLowerCase().includes(q) ||
+        (row.phone||'').toString().toLowerCase().includes(q) ||
+        (row.school||'').toString().toLowerCase().includes(q)
       );
-      const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'orders.csv'; a.click(); URL.revokeObjectURL(a.href);
-      toast('CSV ডাউনলোড হয়েছে');
     });
 
-    // ===== Import CSV =====
-    document.getElementById('importCsv').addEventListener('change', (e)=>{
-      const file = e.target.files[0]; if(!file) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const text = reader.result;
-        const lines = text.split(/\r?\n/).filter(Boolean);
-        if(lines.length === 0){ toast('ফাইল খালি'); e.target.value = ''; return; }
-        const header = lines.shift().split(',').map(x => x.replace(/^\"|\"$/g,'').toLowerCase());
-        const nameIdx = header.findIndex(h => /name/.test(h));
-        const phoneIdx = header.findIndex(h => /phone/.test(h));
-        const schoolIdx = header.findIndex(h => /school/.test(h));
-        const orderNameIdx = header.findIndex(h => /order[_ ]?name/.test(h));
-        const amountIdx = header.findIndex(h => /amount|price|money|টাকা/.test(h));
-        const orderIdIdx = header.findIndex(h => /(order[_ ]?id|id)/.test(h));
-        const orderTimeIdx = header.findIndex(h => /(order[_ ]?datetime|order_time|order_datetime)/.test(h));
-        const createdIdx = header.findIndex(h => /created/.test(h));
+  filtered.sort((a,b)=>{
+    const k = state.sortKey;
+    let va = a[k] !== undefined ? a[k] : '';
+    let vb = b[k] !== undefined ? b[k] : '';
+    if(typeof va === 'string') va = va.toLowerCase();
+    if(typeof vb === 'string') vb = vb.toLowerCase();
+    if(va > vb) return state.sortDir === 'asc' ? 1 : -1;
+    if(va < vb) return state.sortDir === 'asc' ? -1 : 1;
+    return 0;
+  });
 
-        let count = 0;
-        lines.forEach(line=>{
-          const cols = line.match(/\"(?:[^\"]|\"\")*\"|[^,]+/g)?.map(x=>x.replace(/^\"|\"$/g,'').replace(/\"\"/g,'"')) || [];
-          const name = cols[nameIdx] || '';
-          const phone = cols[phoneIdx] || '';
-          const school = cols[schoolIdx] || '';
-          const orderName = cols[orderNameIdx] || '';
-          const amount = amountIdx > -1 ? Number(cols[amountIdx]) : 0;
-          const orderId = cols[orderIdIdx] || '';
-          const orderDateTime = orderTimeIdx > -1 ? Date.parse(cols[orderTimeIdx]) : Date.now();
-          const createdAt = createdIdx > -1 ? Date.parse(cols[createdIdx]) : Date.now();
-          if(name && orderId){
-            store.list.push({
-              name,
-              phone,
-              school,
-              orderName,
-              amount: isNaN(amount) ? 0 : amount,
-              orderId,
-              orderDateTime: isNaN(orderDateTime) ? Date.now() : orderDateTime,
-              createdAt: isNaN(createdAt) ? Date.now() : createdAt
-            });
-            count++;
-          }
-        });
+  const total = filtered.length;
+  const pages = Math.max(1, Math.ceil(total / state.pageSize));
+  if(state.page > pages) state.page = pages;
+  const start = (state.page - 1) * state.pageSize;
+  const rows = filtered.slice(start, start + state.pageSize);
+
+  const tbody = document.querySelector('#dataTable tbody');
+  if(!tbody) return console.warn('No table body to render');
+  tbody.innerHTML = '';
+
+  rows.forEach((row, i) => {
+    const tr = document.createElement('tr');
+    const countForId = counts[(row.orderId||'').toString()] || 0;
+
+    if(countForId >= 10){
+      const bucketIndex = Math.floor((countForId - 10) / 10);
+      const palette = ['#ef4444','#10b981','#f59e0b','#7c3aed','#06b6d4','#f97316','#db2777','#0ea5e9','#8b5cf6','#16a34a'];
+      const color = palette[bucketIndex % palette.length];
+      tr.classList.add('over-limit');
+      tr.style.borderLeft = `4px solid ${color}`;
+      tr.style.background = `linear-gradient(90deg, ${hexToRgba(color,0.06)}, ${hexToRgba(color,0.03)})`;
+    }
+
+    const amountDisplay = formatCurrency(row.amount);
+
+    tr.innerHTML = `
+      <td>${start + i + 1}</td>
+      <td><span class="pill">${escapeHtml(row.name)}</span></td>
+      <td>${escapeHtml(row.orderName || '')}</td>
+      <td>${amountDisplay}</td>
+      <td>${escapeHtml(row.phone)}</td>
+      <td>${escapeHtml(row.school)}</td>
+      <td class="order-id">${escapeHtml(row.orderId)}${countForId>1? ' • '+countForId+ ' টি':''}</td>
+      <td>${row.orderDateTime ? fmtDate(row.orderDateTime) : ''}</td>
+      <td class="hide-sm">${row.createdAt ? fmtDate(row.createdAt) : ''}</td>
+      <td class="actions">
+        <button class="btn btn-success" onclick="edit(${row._idx})">এডিট</button>
+        <button class="btn btn-danger" onclick="remove(${row._idx})">ডিলিট</button>
+      </td>
+    `;
+
+    const orderTd = tr.querySelector('.order-id');
+    if(orderTd && countForId >= 10){
+      const bucketIndex = Math.floor((countForId - 10) / 10);
+      const palette = ['#ef4444','#10b981','#f59e0b','#7c3aed','#06b6d4','#f97316','#db2777','#0ea5e9','#8b5cf6','#16a34a'];
+      const color = palette[bucketIndex % palette.length];
+      orderTd.style.color = color;
+      orderTd.style.fontWeight = '700';
+    }
+
+    tbody.appendChild(tr);
+  });
+
+  // pagination
+  const pg = document.getElementById('pagination');
+  if(pg){
+    pg.innerHTML = '';
+    const info = document.createElement('div');
+    info.style.marginRight = 'auto'; info.style.alignSelf = 'center'; info.style.color = 'var(--muted)';
+    info.textContent = `পেজ ${state.page}/${pages} • মোট ${total}`;
+    pg.appendChild(info);
+    const prev = document.createElement('button'); prev.className='page-btn'; prev.textContent='পূর্ববর্তী'; prev.disabled = state.page <= 1; prev.onclick = ()=>{ if(state.page>1){ state.page--; render(); } };
+    const next = document.createElement('button'); next.className='page-btn'; next.textContent='পরবর্তী'; next.disabled = state.page >= pages; next.onclick = ()=>{ if(state.page<pages){ state.page++; render(); } };
+    pg.appendChild(prev); pg.appendChild(next);
+  }
+}
+
+// ====== Edit / Remove ======
+function edit(idx){
+  const row = store.list[idx];
+  if(!row) return toast('রেকর্ড পাওয়া যায়নি');
+  document.getElementById('name').value = row.name;
+  document.getElementById('phone').value = row.phone || '';
+  document.getElementById('school').value = row.school || '';
+  document.getElementById('orderId').value = row.orderId || '';
+  document.getElementById('orderName').value = row.orderName || '';
+  document.getElementById('amount').value = row.amount !== undefined ? row.amount : '';
+  document.getElementById('editingIndex').value = idx;
+  const pv = document.getElementById('orderPreview');
+  pv.textContent = row.orderDateTime ? `অর্ডারের সময় (সংরক্ষিত): ${fmtDate(row.orderDateTime)}` : '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function remove(idx){
+  if(!confirm('নিশ্চিতভাবে মুছতে চাও?')) return;
+  const rec = store.list[idx];
+  if(!rec){ toast('রেকর্ড পাওয়া যায়নি'); return; }
+  const serverId = rec._id || rec.id;
+  try{
+    if(serverId){
+      await deleteOrderOnServer(serverId);
+      // remove local copy
+      store.list.splice(idx,1);
+      store.save();
+      render();
+      broadcastReload();
+      toast('সার্ভার থেকে মুছে ফেলা হয়েছে 🗑️');
+    } else {
+      // not on server, remove local
+      store.removeByIndex(idx);
+      render();
+      toast('লোকালি মুছে ফেলা হয়েছে 🗑️');
+    }
+  }catch(err){ console.error(err); toast('মুছতে ব্যর্থ হয়েছে'); }
+}
+
+// ====== Form submit handling (create or update) ======
+async function onFormSubmit(e){
+  e.preventDefault();
+  const name = document.getElementById('name').value.trim();
+  const phone = document.getElementById('phone').value.trim();
+  const school = document.getElementById('school').value.trim();
+  const orderId = document.getElementById('orderId').value.trim();
+  const orderName = document.getElementById('orderName').value.trim();
+  const amountVal = document.getElementById('amount').value;
+  const amount = amountVal === '' ? 0 : Number(amountVal);
+  const editingIndex = document.getElementById('editingIndex').value;
+
+  if(!name){ toast('নাম প্রয়োজন'); return; }
+  if(!phone){ toast('ফোন প্রয়োজন'); return; }
+  if(!school){ toast('বিদ্যালয়ের নাম প্রয়োজন'); return; }
+  if(!orderId){ toast('আইডি প্রয়োজন'); return; }
+  if(!orderName){ toast('অর্ডারের নাম প্রয়োজন'); return; }
+  if(isNaN(amount) || amount < 0){ toast('সঠিক টাকা প্রবেশ করাও'); return; }
+
+  let orderDateTime = Date.now();
+  if(editingIndex !== ''){
+    const prev = store.list[+editingIndex];
+    orderDateTime = prev && prev.orderDateTime ? prev.orderDateTime : Date.now();
+  }
+
+  const item = {
+    name, phone, school, orderId, orderName, amount,
+    orderDateTime, createdAt: Date.now()
+  };
+
+  try{
+    if(editingIndex !== ''){
+      // update
+      const local = store.list[+editingIndex];
+      const serverId = local && (local._id || local.id);
+      if(serverId){
+        const updated = await updateOrderOnServer(serverId, item);
+        // sync local
+        const idx = store.list.findIndex(r => (r._id||r.id) == (updated._id||updated.id||serverId));
+        if(idx > -1) store.list[idx] = updated; else store.list.push(updated);
         store.save();
         render();
-        toast(`${count} টি রেকর্ড ইম্পোর্ট হয়েছে`);
-        e.target.value = '';
-      };
-      reader.readAsText(file, 'utf-8');
-    });
+        toast('আপডেট সার্ভারে সফল ✅');
+      } else {
+        // no server id -> create on server as new
+        const created = await createOrderOnServer(item);
+        store.list[+editingIndex] = created;
+        store.save(); render();
+        toast('আপডেট (নতুন হিসেবে) সার্ভারে সফল ✅');
+      }
+    } else {
+      // create
+      const created = await createOrderOnServer(item);
+      store.list.push(created);
+      store.save(); render();
+      toast('সংরক্ষণ সার্ভারে সফল ✅');
+    }
+    // clear form
+    e.target.reset(); document.getElementById('editingIndex').value = ''; document.getElementById('orderPreview').textContent = '';
+    broadcastReload();
+  }catch(err){
+    console.error('form submit error', err);
+    // fallback: store locally if server unavailable
+    if(!navigator.onLine){
+      // store locally and inform user
+      if(editingIndex !== '') store.upsertByIndex(+editingIndex, item); else store.list.push(item);
+      store.save(); render(); toast('অফলাইনে হওয়ায় লোকালি সংরক্ষণ করা হয়েছে');
+    } else {
+      toast('সার্ভারে সমস্যা হয়েছে');
+    }
+  }
+}
 
-    // ===== Init =====
-    store.load();
-    render();
+// ====== CSV Export / Import (works with store.list) ======
+function exportCsv(){
+  const rows = [["name","phone","school","order_name","amount","order_id","order_datetime","created_at"]].concat(
+    store.list.map(r=>[
+      r.name, r.phone, r.school, r.orderName, r.amount, r.orderId,
+      r.orderDateTime ? new Date(r.orderDateTime).toISOString() : '',
+      r.createdAt ? new Date(r.createdAt).toISOString() : ''
+    ])
+  );
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'orders.csv'; a.click(); URL.revokeObjectURL(a.href);
+  toast('CSV ডাউনলোড হয়েছে');
+}
+
+function importCsvFromFile(file){
+  return new Promise((resolve,reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      const text = reader.result;
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      if(lines.length === 0){ return reject('ফাইল খালি'); }
+      const header = lines.shift().split(',').map(x => x.replace(/^\"|\"$/g,'').toLowerCase());
+      const nameIdx = header.findIndex(h => /name/.test(h));
+      const phoneIdx = header.findIndex(h => /phone/.test(h));
+      const schoolIdx = header.findIndex(h => /school/.test(h));
+      const orderNameIdx = header.findIndex(h => /order[_ ]?name/.test(h));
+      const amountIdx = header.findIndex(h => /amount|price|money|টাকা/.test(h));
+      const orderIdIdx = header.findIndex(h => /(order[_ ]?id|id)/.test(h));
+      const orderTimeIdx = header.findIndex(h => /(order[_ ]?datetime|order_time|order_datetime)/.test(h));
+      const createdIdx = header.findIndex(h => /created/.test(h));
+
+      let count = 0;
+      lines.forEach(line=>{
+        const cols = line.match(/\"(?:[^\"]|\"\")*\"|[^,]+/g)?.map(x=>x.replace(/^\"|\"$/g,'').replace(/\"\"/g,'"')) || [];
+        const name = cols[nameIdx] || '';
+        const phone = cols[phoneIdx] || '';
+        const school = cols[schoolIdx] || '';
+        const orderName = cols[orderNameIdx] || '';
+        const amount = amountIdx > -1 ? Number(cols[amountIdx]) : 0;
+        const orderId = cols[orderIdIdx] || '';
+        const orderDateTime = orderTimeIdx > -1 ? Date.parse(cols[orderTimeIdx]) : Date.now();
+        const createdAt = createdIdx > -1 ? Date.parse(cols[createdIdx]) : Date.now();
+        if(name && orderId){
+          store.list.push({ name, phone, school, orderName, amount: isNaN(amount)?0:amount, orderId, orderDateTime: isNaN(orderDateTime)?Date.now():orderDateTime, createdAt: isNaN(createdAt)?Date.now():createdAt });
+          count++;
+        }
+      });
+      store.save(); render(); toast(`${count} টি রেকর্ড ইম্পোর্ট হয়েছে`);
+      resolve(count);
+    };
+    reader.onerror = (e)=> reject(e);
+    reader.readAsText(file,'utf-8');
+  });
+}
+
+// ====== Polling + BroadcastChannel ======
+let pollTimer = null;
+function startPolling(){ if(POLL_INTERVAL_MS > 0){ pollTimer = setInterval(async ()=>{ try{ await reloadFromServerIfChanged(); }catch(e){ /* ignore */ } }, POLL_INTERVAL_MS); }}
+function stopPolling(){ if(pollTimer) clearInterval(pollTimer); pollTimer = null; }
+
+// BroadcastChannel for same-origin tab sync
+let bc = null;
+function initBroadcastChannel(){
+  try{
+    bc = new BroadcastChannel('orders_channel');
+    bc.onmessage = (ev)=>{ if(ev.data === 'reload_orders') loadOrdersAndRender(); };
+  }catch(e){ console.warn('BroadcastChannel not available', e); bc = null; }
+}
+function broadcastReload(){ try{ if(bc) bc.postMessage('reload_orders'); }catch(e){/* ignore */} }
+
+// ====== Smart reload: fetch server orders and compare minimal diff ======
+async function reloadFromServerIfChanged(){
+  try{
+    const serverList = await loadOrdersFromServer();
+    // simple change detection: length or last createdAt differs
+    const localCount = store.list.length;
+    const serverCount = serverList.length;
+    let changed = false;
+    if(localCount !== serverCount) changed = true;
+    else {
+      // compare by ids and timestamps
+      for(let i=0;i<serverList.length;i++){
+        const s = serverList[i];
+        const l = store.list.find(x => (x._id||x.id) == (s._id||s.id));
+        if(!l || (s.updatedAt && l.updatedAt && s.updatedAt !== l.updatedAt) || (s.createdAt && l.createdAt && s.createdAt !== l.createdAt)) { changed = true; break; }
+      }
+    }
+    if(changed){ store.list = serverList; store.save(); render(); }
+  }catch(err){ console.warn('Polling/load failed', err); }
+}
+
+// One-off load at init
+async function loadOrdersAndRender(){
+  try{
+    const serverList = await loadOrdersFromServer();
+    store.list = serverList; store.save(); render();
+  }catch(err){
+    log('Server load failed, using local store'); store.load(); render(); toast('সার্ভার নাও থাকতে পারে — লোকাল ডেটা দেখানো হচ্ছে');
+  }
+}
+
+// ====== Init: bind events and start ======
+function bindUI(){
+  const form = document.getElementById('orderForm'); if(form) form.addEventListener('submit', onFormSubmit);
+  const btnClearForm = document.getElementById('btnClearForm'); if(btnClearForm) btnClearForm.addEventListener('click', ()=>{ document.getElementById('orderForm').reset(); document.getElementById('editingIndex').value=''; document.getElementById('orderPreview').textContent=''; toast('ফর্ম ক্লিয়ার হয়েছে'); });
+  const btnAutoId = document.getElementById('btnAutoId'); if(btnAutoId) btnAutoId.addEventListener('click', ()=>{ document.getElementById('orderId').value = autoId(); toast('Auto ID সেট হয়েছে'); });
+  const search = document.getElementById('search'); if(search) search.addEventListener('input', (e)=>{ state.query = e.target.value; state.page = 1; render(); });
+  const pageSize = document.getElementById('pageSize'); if(pageSize) pageSize.addEventListener('change', (e)=>{ state.pageSize = +e.target.value; state.page=1; render(); });
+  const btnClearAll = document.getElementById('btnClearAll'); if(btnClearAll) btnClearAll.addEventListener('click', ()=>{ if(confirm('সব ডাটা স্থায়ীভাবে মুছে যাবে। নিশ্চিত?')){ store.clear(); render(); toast('সব ডাটা মুছে ফেলা হয়েছে'); broadcastReload(); } });
+  const btnExport = document.getElementById('btnExport'); if(btnExport) btnExport.addEventListener('click', exportCsv);
+  const importCsv = document.getElementById('importCsv'); if(importCsv) importCsv.addEventListener('change', (e)=>{ const f = e.target.files[0]; if(f) importCsvFromFile(f).catch(err=>toast(String(err))); e.target.value=''; });
+}
+
+async function init(){
+  bindUI(); initBroadcastChannel(); store.load(); await loadOrdersAndRender(); startPolling();
+  // listen to online/offline
+  window.addEventListener('online', ()=>{ toast('অনলাইন হচ্ছে — সার্ভারের সাথে সিঙ্ক করা হচ্ছে'); loadOrdersAndRender(); });
+  window.addEventListener('offline', ()=>{ toast('অফলাইন — লোকাল ডেটা দেখানো হচ্ছে'); });
+}
+
+// expose some functions globally for inline onclick handlers used in table rows
+window.edit = edit;
+window.remove = (idx)=> remove(idx);
+window.autoId = autoId;
+
+// Start
+init();
+
   </script>
 </body>
 </html>
