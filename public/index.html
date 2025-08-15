@@ -122,7 +122,8 @@
         <div class="muted">নতুন: অর্ডারের নাম ও টাকার ফিল্ড যোগ করা হয়েছে। একই আইডি-তে ১০+ হওয়া সেক্ষেত্রে রেড হাইলাইট।</div>
       </div>
       <div class="spacer"></div>
-      <span class="badge brand-grad">LocalStorage enabled</span>
+      <span class="badge brand-grad" id="storageBadge">LocalStorage enabled</span>
+      <span class="badge" id="serverStatus" style="margin-left:8px;">সার্ভার: অনিহিত</span>
     </header>
 
     <div class="grid">
@@ -250,20 +251,17 @@
 
   <script>
     /*
-      Updated client script with safety fixes and CSV/header parsing improvements.
-      - Safe socket.init (fallback no-op if socket.io client missing)
-      - fetchJson: handle 204/empty & robust json parsing
-      - computeCounts: skip empty orderId
-      - compareRows: smarter comparator for dates/numbers/text
-      - render: uses compareRows
-      - exportCsv: revokeObjectURL delayed
-      - importCsv: header parsed using CSV-safe regex
+      Added offline-queue sync and server-status badge.
+      - If server is down, operations are queued to localStorage and retried when online.
+      - Server status shown in header via #serverStatus.
+      - Queue stored under QUEUE_KEY and processed on 'online' or after successful server call.
     */
 
     // ====== Config ======
     const API_URL = ''; // keep empty when served from same server; otherwise set full URL
     const POLL_INTERVAL_MS = 5000;
     const STORE_KEY = 'orders_store_v4_with_amount';
+    const QUEUE_KEY = 'orders_queue_v1';
 
     // ====== Socket.io (safe init) ======
     let socket = { on: ()=>{}, emit: ()=>{} }; // no-op fallback
@@ -286,9 +284,16 @@
       setTimeout(()=>{ item.remove(); }, 3000);
     }
 
+    function setServerStatus(isOnline, text){
+      const s = document.getElementById('serverStatus');
+      if(!s) return;
+      if(isOnline){ s.textContent = text || 'সার্ভার: অন'; s.style.background = 'linear-gradient(90deg, rgba(34,197,94,.12), rgba(34,197,94,.06))'; s.style.border = '1px solid rgba(34,197,94,.25)'; }
+      else { s.textContent = text || 'সার্ভার: অফলাইন'; s.style.background = 'linear-gradient(90deg, rgba(239,68,68,.08), rgba(239,68,68,.03))'; s.style.border = '1px solid rgba(239,68,68,.25)'; }
+    }
+
     function fmtDate(ts){ if(!ts) return ''; const d=new Date(ts); const pad=n=>n.toString().padStart(2,'0'); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
     function autoId(){ const d=new Date(); const pad=n=>n.toString().padStart(2,'0'); return `YY-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; }
-    function escapeHtml(str){ return String(str||'').replace(/[&<>\"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
+    function escapeHtml(str){ return String(str||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
     function formatCurrency(v){ if(v === '' || v === null || v === undefined || isNaN(+v)) return ''; const n=Number(v); return `৳ ${n.toFixed(2)}`; }
     function hexToRgba(hex, alpha){ if(!hex) return `rgba(0,0,0,${alpha})`; const h=hex.replace('#',''); const bigint=parseInt(h,16); const r=(bigint>>16)&255; const g=(bigint>>8)&255; const b=bigint&255; return `rgba(${r},${g},${b},${alpha})`; }
 
@@ -302,39 +307,99 @@
       clear(){ this.list = []; this.save(); }
     };
 
-    // ====== Network: Server CRUD ======
-    async function fetchJson(url, opts){
-      const res = await fetch((API_URL||'') + url, opts);
-      if(!res.ok) {
-        const txt = await res.text().catch(()=>res.statusText);
-        throw new Error(`HTTP ${res.status} ${txt}`);
+    // ====== Offline queue helpers ======
+    function loadQueue(){ try{ return JSON.parse(localStorage.getItem(QUEUE_KEY)) || []; }catch{ return []; } }
+    function saveQueue(q){ try{ localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }catch(e){ console.warn('queue save failed', e); } }
+    function enqueueOp(op){ const q = loadQueue(); q.push(op); saveQueue(q); toast('অপারেশন কিউতে যোগ করা হয়েছে'); }
+
+    async function processQueue(){
+      let q = loadQueue();
+      if(!q.length) return;
+      toast('কিউ সিঙ্ক শুরু হচ্ছে...');
+      for(let i=0;i<q.length;){
+        const op = q[0];
+        try{
+          if(op.type === 'create'){
+            const created = await createOrderOnServer(op.item);
+            // replace local temp item with created server item
+            const idx = store.list.findIndex(r => r.tempId && op.tempId && r.tempId === op.tempId);
+            if(idx > -1){ store.list[idx] = created; }
+            else { store.list.unshift(created); }
+            saveQueue(q.slice(1));
+            q = loadQueue();
+            continue; // don't increment i because we reloaded q
+          }
+          if(op.type === 'update'){
+            const updated = await updateOrderOnServer(op.id, op.item);
+            const idx = store.list.findIndex(r => (r._id||r.id) == (updated._id||updated.id));
+            if(idx > -1) store.list[idx] = updated;
+            saveQueue(q.slice(1)); q = loadQueue(); continue;
+          }
+          if(op.type === 'delete'){
+            await deleteOrderOnServer(op.id);
+            const idx = store.list.findIndex(r => (r._id||r.id) == op.id || r.tempId == op.tempId);
+            if(idx > -1) store.list.splice(idx,1);
+            saveQueue(q.slice(1)); q = loadQueue(); continue;
+          }
+          // unknown op: drop it
+          saveQueue(q.slice(1)); q = loadQueue();
+        }catch(err){
+          console.warn('sync op failed — will retry later', err);
+          // stop processing to preserve order; will retry when online again
+          break;
+        }
       }
-      if (res.status === 204) return null;
-      try { return await res.json(); } catch(e){ return await res.text().catch(()=>null); }
+      store.save(); render();
+      if(loadQueue().length === 0) toast('কিউ সিঙ্ক সম্পন্ন হয়েছে');
+    }
+
+    // ====== Network: Server CRUD (with server-status updates) ======
+    async function fetchJson(url, opts){
+      try{
+        const res = await fetch((API_URL||'') + url, opts);
+        if(!res.ok){
+          const txt = await res.text().catch(()=>res.statusText);
+          throw new Error(`HTTP ${res.status} ${txt}`);
+        }
+        if (res.status === 204) return null;
+        try { return await res.json(); } catch(e){ return await res.text().catch(()=>null); }
+      }catch(err){
+        // network or CORS error
+        setServerStatus(false);
+        throw err;
+      }
     }
 
     async function loadOrdersFromServer(){
       const url = `/orders`;
       const data = await fetchJson(url);
       if(!Array.isArray(data)) throw new Error('Server returned non-array');
+      setServerStatus(true);
       return data.map(item => ({ ...item }));
     }
 
     async function createOrderOnServer(order){
       const url = `/orders`;
       const created = await fetchJson(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(order) });
+      setServerStatus(true);
+      // attempt to process queue after successful server call
+      setTimeout(processQueue, 1000);
       return created;
     }
 
     async function updateOrderOnServer(id, order){
       const url = `/orders/${encodeURIComponent(id)}`;
       const updated = await fetchJson(url, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(order) });
+      setServerStatus(true);
+      setTimeout(processQueue, 1000);
       return updated;
     }
 
     async function deleteOrderOnServer(id){
       const url = `/orders/${encodeURIComponent(id)}`;
       const resp = await fetchJson(url, { method: 'DELETE' });
+      setServerStatus(true);
+      setTimeout(processQueue, 1000);
       return resp;
     }
 
@@ -462,11 +527,21 @@
       const serverId = rec._id || rec.id;
       try{
         if(serverId){
+          // optimistic remove locally for snappy UI
           store.list.splice(idx,1); store.save(); render();
           await deleteOrderOnServer(serverId);
           toast('সার্ভার থেকে মুছে ফেলা হয়েছে 🗑️');
         } else {
-          store.removeByIndex(idx); render(); toast('লোকালি মুছে ফেলা হয়েছে 🗑️');
+          // no server id yet -> if tempId exists, just remove and if online enqueue delete with tempId
+          const tempId = rec.tempId;
+          store.removeByIndex(idx); render();
+          if(navigator.onLine){
+            if(tempId) enqueueOp({ type: 'delete', tempId });
+          } else {
+            // if offline, enqueue delete op with tempId so when synced the created item won't be pushed
+            enqueueOp({ type: 'delete', tempId });
+          }
+          toast('লোকালি মুছে ফেলা হয়েছে 🗑️');
         }
       }catch(err){ console.error(err); toast('মুছতে ব্যর্থ হয়েছে'); await loadOrdersAndRender(); }
     }
@@ -508,23 +583,41 @@
             if(idx > -1) store.list[idx] = updated; else store.list.unshift(updated);
             store.save(); render(); toast('আপডেট সার্ভারে সফল ✅');
           } else {
-            const created = await createOrderOnServer(item);
-            store.list[+editingIndex] = created;
-            store.save(); render(); toast('আপডেট (নতুন হিসেবে) সার্ভারে সফল ✅');
+            // create locally with tempId and enqueue create op
+            const tempId = local.tempId || ('tmp-'+Date.now());
+            const localItem = { ...local, ...item, tempId, createdAt: Date.now() };
+            store.list[+editingIndex] = localItem; store.save(); render();
+            enqueueOp({ type: 'create', tempId, item: localItem });
+            toast('লোকালি আপডেট করা হয়েছে — সার্ভারে পরে সিঙ্ক হবে');
           }
         } else {
-          const created = await createOrderOnServer(item);
-          store.list.unshift(created);
-          store.save(); render(); toast('সংরক্ষণ সার্ভারে সফল ✅');
+          // new create
+          if(navigator.onLine){
+            const created = await createOrderOnServer(item);
+            store.list.unshift(created); store.save(); render(); toast('সংরক্ষণ সার্ভারে সফল ✅');
+          } else {
+            const tempId = 'tmp-'+Date.now();
+            const localItem = { ...item, tempId, createdAt: Date.now() };
+            store.list.unshift(localItem); store.save(); render();
+            enqueueOp({ type: 'create', tempId, item: localItem });
+            toast('অফলাইনে সংরক্ষণ করা হয়েছে — সার্ভারে পরে সিঙ্ক হবে');
+          }
         }
         e.target.reset(); document.getElementById('editingIndex').value = ''; document.getElementById('orderPreview').textContent = '';
       }catch(err){
         console.error('form submit error', err);
-        if(!navigator.onLine){
-          if(editingIndex !== '') store.upsertByIndex(+editingIndex, item); else store.list.push(item);
-          store.save(); render(); toast('অফলাইনে হওয়ায় লোকালি সংরক্ষণ করা হয়েছে');
+        // fallback offline enqueue
+        if(editingIndex !== ''){
+          const local = store.list[+editingIndex];
+          const tempId = local && local.tempId ? local.tempId : ('tmp-'+Date.now());
+          const localItem = { ...local, ...item, tempId };
+          store.list[+editingIndex] = localItem; store.save(); render();
+          enqueueOp({ type: 'create', tempId, item: localItem });
+          toast('অফলাইনে লোকালি সংরক্ষণ করা হয়েছে (error মাধ্যমে)');
         } else {
-          toast('সার্ভারে সমস্যা হয়েছে');
+          const tempId = 'tmp-'+Date.now();
+          const localItem = { ...item, tempId };
+          store.list.unshift(localItem); store.save(); render(); enqueueOp({ type: 'create', tempId, item: localItem }); toast('অফলাইনে লোকালি সংরক্ষণ করা হয়েছে (error মাধ্যমে)');
         }
       }
     }
@@ -628,7 +721,7 @@
           }
         }
         if(changed){ store.list = serverList; store.save(); render(); }
-      }catch(err){ console.warn('Polling/load failed', err); }
+      }catch(err){ console.warn('Polling/load failed', err); setServerStatus(false); }
     }
 
     // One-off load at init
@@ -637,7 +730,7 @@
         const serverList = await loadOrdersFromServer();
         store.list = serverList; store.save(); render();
       }catch(err){
-        log('Server load failed, using local store'); store.load(); render(); toast('সার্ভার নাও থাকতে পারে — লোকাল ডেটা দেখানো হচ্ছে');
+        log('Server load failed, using local store'); store.load(); render(); toast('সার্ভার নাও থাকতে পারে — লোকাল ডেটা দেখানো হচ্ছে'); setServerStatus(false);
       }
     }
 
@@ -655,8 +748,12 @@
 
     async function init(){
       bindUI(); store.load(); await loadOrdersAndRender(); startPolling();
-      window.addEventListener('online', ()=>{ toast('অনলাইন হচ্ছে — সার্ভারের সাথে সিঙ্ক করা হচ্ছে'); loadOrdersAndRender(); });
-      window.addEventListener('offline', ()=>{ toast('অফলাইন — লোকাল ডেটা দেখানো হচ্ছে'); });
+      // process any queued ops when online
+      window.addEventListener('online', ()=>{ setServerStatus(true); toast('অনলাইন হচ্ছে — সার্ভারের সাথে সিঙ্ক করা হচ্ছে'); processQueue().catch(()=>{}); loadOrdersAndRender(); });
+      window.addEventListener('offline', ()=>{ setServerStatus(false); toast('অফলাইন — লোকাল ডেটা দেখানো হচ্ছে'); });
+
+      // attempt queue processing on startup too (best-effort)
+      if(navigator.onLine) setTimeout(processQueue, 1500);
     }
 
     // expose some functions globally for inline onclick handlers used in table rows
