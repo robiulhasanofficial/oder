@@ -93,12 +93,9 @@
     .hide-sm { display:none; }
     @media (min-width: 640px){ .hide-sm { display: table-cell; } }
 
-    /* Over-limit styling with alternating color per 10-count bucket */
-    tr.over-limit-red td { border-left: 4px solid var(--err); background: linear-gradient(90deg, rgba(239,68,68,0.06), rgba(239,68,68,0.03)); }
-    tr.over-limit-green td { border-left: 4px solid var(--ok); background: linear-gradient(90deg, rgba(50,213,131,0.06), rgba(50,213,131,0.03)); }
+    /* Over-limit styling kept for semantics (JS now applies inline styles) */
     .order-id.over-red { color: var(--err); font-weight: 700; }
     .order-id.over-green { color: var(--ok); font-weight: 700; }
-
 
     /* small-screen card view for accessibility */
     @media (max-width: 860px){
@@ -248,14 +245,19 @@
 
   <div class="toast" id="toast"></div>
 
-  <!-- socket.io client -->
+  <!-- socket.io client (keep as-is if server provides) -->
   <script src="/socket.io/socket.io.js"></script>
 
   <script>
     /*
-      Updated client script with Socket.io (kept UI/CSS unchanged)
-      - Use same-origin API (relative paths) when serving index.html from the same express server.
-      - If your API/socket are on another host, change io('https://your-host') and API_URL accordingly.
+      Updated client script with safety fixes and CSV/header parsing improvements.
+      - Safe socket.init (fallback no-op if socket.io client missing)
+      - fetchJson: handle 204/empty & robust json parsing
+      - computeCounts: skip empty orderId
+      - compareRows: smarter comparator for dates/numbers/text
+      - render: uses compareRows
+      - exportCsv: revokeObjectURL delayed
+      - importCsv: header parsed using CSV-safe regex
     */
 
     // ====== Config ======
@@ -263,8 +265,13 @@
     const POLL_INTERVAL_MS = 5000;
     const STORE_KEY = 'orders_store_v4_with_amount';
 
-    // ====== Socket.io ======
-    const socket = io(); // if remote: io('https://your-server')
+    // ====== Socket.io (safe init) ======
+    let socket = { on: ()=>{}, emit: ()=>{} }; // no-op fallback
+    if (typeof io === 'function') {
+      try { socket = io(); } catch(e){ console.warn('socket init failed', e); }
+    } else {
+      console.warn('socket.io client missing — realtime disabled');
+    }
 
     // ====== Helpers ======
     function log(...args){ console.log('[ORDERS]', ...args); }
@@ -281,7 +288,7 @@
 
     function fmtDate(ts){ if(!ts) return ''; const d=new Date(ts); const pad=n=>n.toString().padStart(2,'0'); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
     function autoId(){ const d=new Date(); const pad=n=>n.toString().padStart(2,'0'); return `YY-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; }
-    function escapeHtml(str){ return String(str||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
+    function escapeHtml(str){ return String(str||'').replace(/[&<>\"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
     function formatCurrency(v){ if(v === '' || v === null || v === undefined || isNaN(+v)) return ''; const n=Number(v); return `৳ ${n.toFixed(2)}`; }
     function hexToRgba(hex, alpha){ if(!hex) return `rgba(0,0,0,${alpha})`; const h=hex.replace('#',''); const bigint=parseInt(h,16); const r=(bigint>>16)&255; const g=(bigint>>8)&255; const b=bigint&255; return `rgba(${r},${g},${b},${alpha})`; }
 
@@ -302,8 +309,8 @@
         const txt = await res.text().catch(()=>res.statusText);
         throw new Error(`HTTP ${res.status} ${txt}`);
       }
-      const data = await res.json();
-      return data;
+      if (res.status === 204) return null;
+      try { return await res.json(); } catch(e){ return await res.text().catch(()=>null); }
     }
 
     async function loadOrdersFromServer(){
@@ -331,35 +338,40 @@
       return resp;
     }
 
-    // ====== Rendering ======
+    // ====== Rendering & helpers ======
     let state = { sortKey: 'createdAt', sortDir: 'desc', page:1, pageSize:10, query: '' };
 
-    function computeCounts(list){ const counts = {}; list.forEach(r => { const k = (r.orderId||'').toString(); counts[k] = (counts[k]||0) + 1; }); return counts; }
+    function computeCounts(list){
+      const counts = {};
+      list.forEach(r => { const k = (r.orderId||'').toString().trim(); if(!k) return; counts[k] = (counts[k]||0) + 1; });
+      return counts;
+    }
+
+    function compareRows(a,b,k){
+      let va = a[k] !== undefined ? a[k] : '';
+      let vb = b[k] !== undefined ? b[k] : '';
+      if(/date|time|at$/i.test(k) || k.toLowerCase().includes('date') || k.toLowerCase().includes('at')){
+        va = Number(new Date(va)) || 0; vb = Number(new Date(vb)) || 0; return state.sortDir === 'asc' ? va - vb : vb - va;
+      }
+      const na = Number(va), nb = Number(vb);
+      if(!isNaN(na) && !isNaN(nb)) return state.sortDir === 'asc' ? na - nb : nb - na;
+      va = String(va).toLowerCase(); vb = String(vb).toLowerCase(); if(va > vb) return state.sortDir === 'asc' ? 1 : -1; if(va < vb) return state.sortDir === 'asc' ? -1 : 1; return 0;
+    }
 
     function render(){
       const q = state.query.toLowerCase();
       const counts = computeCounts(store.list);
-      const filtered = store.list.map((x, idx) => ({...x, _idx: idx}))
-        .filter(row => {
-          return (
-            (row.name||'').toString().toLowerCase().includes(q) ||
-            (row.orderName||'').toString().toLowerCase().includes(q) ||
-            (row.orderId||'').toString().toLowerCase().includes(q) ||
-            (row.phone||'').toString().toLowerCase().includes(q) ||
-            (row.school||'').toString().toLowerCase().includes(q)
-          );
-        });
-
-      filtered.sort((a,b)=>{
-        const k = state.sortKey;
-        let va = a[k] !== undefined ? a[k] : '';
-        let vb = b[k] !== undefined ? b[k] : '';
-        if(typeof va === 'string') va = va.toLowerCase();
-        if(typeof vb === 'string') vb = vb.toLowerCase();
-        if(va > vb) return state.sortDir === 'asc' ? 1 : -1;
-        if(va < vb) return state.sortDir === 'asc' ? -1 : 1;
-        return 0;
+      const filtered = store.list.map((x, idx) => ({...x, _idx: idx})).filter(row => {
+        return (
+          (row.name||'').toString().toLowerCase().includes(q) ||
+          (row.orderName||'').toString().toLowerCase().includes(q) ||
+          (row.orderId||'').toString().toLowerCase().includes(q) ||
+          (row.phone||'').toString().toLowerCase().includes(q) ||
+          (row.school||'').toString().toLowerCase().includes(q)
+        );
       });
+
+      filtered.sort((a,b)=> compareRows(a,b,state.sortKey) );
 
       const total = filtered.length;
       const pages = Math.max(1, Math.ceil(total / state.pageSize));
@@ -379,12 +391,11 @@
           const bucketIndex = Math.floor((countForId - 10) / 10);
           const palette = ['#ef4444','#10b981','#f59e0b','#7c3aed','#06b6d4','#f97316','#db2777','#0ea5e9','#8b5cf6','#16a34a'];
           const color = palette[bucketIndex % palette.length];
-          tr.classList.add('over-limit');
           tr.style.borderLeft = `4px solid ${color}`;
           tr.style.background = `linear-gradient(90deg, ${hexToRgba(color,0.06)}, ${hexToRgba(color,0.03)})`;
         }
 
-        const amountDisplay = formatCurrency(row.amount);
+        const amountDisplay = escapeHtml(formatCurrency(row.amount));
 
         tr.innerHTML = `
           <td>${start + i + 1}</td>
@@ -451,17 +462,11 @@
       const serverId = rec._id || rec.id;
       try{
         if(serverId){
-          // optimistic remove locally for snappy UI
-          store.list.splice(idx,1);
-          store.save();
-          render();
-          // call server to delete
+          store.list.splice(idx,1); store.save(); render();
           await deleteOrderOnServer(serverId);
           toast('সার্ভার থেকে মুছে ফেলা হয়েছে 🗑️');
         } else {
-          store.removeByIndex(idx);
-          render();
-          toast('লোকালি মুছে ফেলা হয়েছে 🗑️');
+          store.removeByIndex(idx); render(); toast('লোকালি মুছে ফেলা হয়েছে 🗑️');
         }
       }catch(err){ console.error(err); toast('মুছতে ব্যর্থ হয়েছে'); await loadOrdersAndRender(); }
     }
@@ -491,10 +496,7 @@
         orderDateTime = prev && prev.orderDateTime ? prev.orderDateTime : Date.now();
       }
 
-      const item = {
-        name, phone, school, orderId, orderName, amount,
-        orderDateTime, createdAt: Date.now()
-      };
+      const item = { name, phone, school, orderId, orderName, amount, orderDateTime, createdAt: Date.now() };
 
       try{
         if(editingIndex !== ''){
@@ -504,20 +506,16 @@
             const updated = await updateOrderOnServer(serverId, item);
             const idx = store.list.findIndex(r => (r._id||r.id) == (updated._id||updated.id||serverId));
             if(idx > -1) store.list[idx] = updated; else store.list.unshift(updated);
-            store.save();
-            render();
-            toast('আপডেট সার্ভারে সফল ✅');
+            store.save(); render(); toast('আপডেট সার্ভারে সফল ✅');
           } else {
             const created = await createOrderOnServer(item);
             store.list[+editingIndex] = created;
-            store.save(); render();
-            toast('আপডেট (নতুন হিসেবে) সার্ভারে সফল ✅');
+            store.save(); render(); toast('আপডেট (নতুন হিসেবে) সার্ভারে সফল ✅');
           }
         } else {
           const created = await createOrderOnServer(item);
           store.list.unshift(created);
-          store.save(); render();
-          toast('সংরক্ষণ সার্ভারে সফল ✅');
+          store.save(); render(); toast('সংরক্ষণ সার্ভারে সফল ✅');
         }
         e.target.reset(); document.getElementById('editingIndex').value = ''; document.getElementById('orderPreview').textContent = '';
       }catch(err){
@@ -542,7 +540,9 @@
       );
       const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'orders.csv'; a.click(); URL.revokeObjectURL(a.href);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'orders.csv'; a.click();
+      setTimeout(()=> URL.revokeObjectURL(url), 5000);
       toast('CSV ডাউনলোড হয়েছে');
     }
 
@@ -553,7 +553,9 @@
           const text = reader.result;
           const lines = text.split(/\r?\n/).filter(Boolean);
           if(lines.length === 0){ return reject('ফাইল খালি'); }
-          const header = lines.shift().split(',').map(x => x.replace(/^\"|\"$/g,'').toLowerCase());
+          const headerLine = lines.shift();
+          const headerTokens = headerLine.match(/\"(?:[^\"]|\"\")*\"|[^,]+/g) || [];
+          const header = headerTokens.map(x => x.replace(/^\"|\"$/g,'').toLowerCase());
           const nameIdx = header.findIndex(h => /name/.test(h));
           const phoneIdx = header.findIndex(h => /phone/.test(h));
           const schoolIdx = header.findIndex(h => /school/.test(h));
@@ -592,33 +594,22 @@
     function startPolling(){ if(POLL_INTERVAL_MS > 0){ pollTimer = setInterval(async ()=>{ try{ await reloadFromServerIfChanged(); }catch(e){ /* ignore */ } }, POLL_INTERVAL_MS); }}
     function stopPolling(){ if(pollTimer) clearInterval(pollTimer); pollTimer = null; }
 
-    socket.on('order:created', (order) => {
+    socket.on && socket.on('order:created', (order) => {
       if(!order) return;
       const exists = store.list.find(r => (r._id||r.id) == (order._id||order.id));
-      if(!exists){
-        store.list.unshift(order);
-        store.save(); render();
-      }
+      if(!exists){ store.list.unshift(order); store.save(); render(); }
     });
 
-    socket.on('order:updated', (order) => {
+    socket.on && socket.on('order:updated', (order) => {
       if(!order) return;
       const idx = store.list.findIndex(r => (r._id||r.id) == (order._id||order.id));
-      if(idx > -1){
-        store.list[idx] = order;
-        store.save(); render();
-      } else {
-        store.list.unshift(order); store.save(); render();
-      }
+      if(idx > -1){ store.list[idx] = order; store.save(); render(); } else { store.list.unshift(order); store.save(); render(); }
     });
 
-    socket.on('order:deleted', (id) => {
+    socket.on && socket.on('order:deleted', (id) => {
       if(!id) return;
       const idx = store.list.findIndex(r => (r._id||r.id) == id);
-      if(idx > -1){
-        store.list.splice(idx,1);
-        store.save(); render();
-      }
+      if(idx > -1){ store.list.splice(idx,1); store.save(); render(); }
     });
 
     // ====== Smart reload: fetch server orders and compare minimal diff ======
@@ -664,7 +655,6 @@
 
     async function init(){
       bindUI(); store.load(); await loadOrdersAndRender(); startPolling();
-      // listen to online/offline
       window.addEventListener('online', ()=>{ toast('অনলাইন হচ্ছে — সার্ভারের সাথে সিঙ্ক করা হচ্ছে'); loadOrdersAndRender(); });
       window.addEventListener('offline', ()=>{ toast('অফলাইন — লোকাল ডেটা দেখানো হচ্ছে'); });
     }
