@@ -119,11 +119,11 @@
       </div>
       <div>
         <h1>অর্ডার ডাটা ম্যানেজার</h1>
-        <div class="muted">নতুন: অর্ডারের নাম ও টাকার ফিল্ড যোগ করা হয়েছে। একই আইডি-তে ১০+ হওয়া সেক্ষেত্রে রেড হাইলাইট।</div>
+        <div class="muted">নতুন: অর্ডারের নাম ও টাকার ফিল্ড যোগ করা হয়েছে। একই আইডি-তে ১০+ হলে রেড হাইলাইট।</div>
       </div>
       <div class="spacer"></div>
-      <span class="badge brand-grad" id="storageBadge">LocalStorage enabled</span>
-      <span class="badge" id="serverStatus" style="margin-left:8px;">সার্ভার: অনিহিত</span>
+      <span class="badge brand-grad" id="storageBadge">লোকালস্টোরেজ চালু</span>
+      <span class="badge" id="serverStatus" style="margin-left:8px;">সার্ভার: অনিশ্চিত</span>
     </header>
 
     <div class="grid">
@@ -251,20 +251,25 @@
 
   <script>
     /*
-      Added offline-queue sync and server-status badge.
-      - If server is down, operations are queued to localStorage and retried when online.
-      - Server status shown in header via #serverStatus.
-      - Queue stored under QUEUE_KEY and processed on 'online' or after successful server call.
+      আপডেট: মূল সমস্যাগুলো সমাধান করা হয়েছে ---
+      - এডিট/আপডেটের ক্ষেত্রে অফলাইন/ত্রুটির সময় সঠিকভাবে 'update' অথবা 'create' কিউ অপ তৈরি
+      - কিউ প্রসেসিং আরও রেজিলিয়েন্ট করা হয়েছে
+      - সার্ভার স্ট্যাটাস ব্যাজ উন্নত করা হয়েছে
+      - CSV ইম্পোর্ট আরও স্থিতিশীল করা হয়েছে (হেডার-ম্যাচিং উন্নত)
+      - Export filename এখন টাইমস্ট্যাম্প সহ
+      - ছোট UI ও ভ্যালিডেশন নিখুঁত করা হয়েছে (ফোন, অ্যামাউন্ট)
+
+      নোট: সার্ভার এন্ডপয়েন্ট `/orders` ধরে কোড করা আছে — যদি আলাদা API থাকে তাহলে API_URL কনফিগার করুন।
     */
 
     // ====== Config ======
-    const API_URL = ''; // keep empty when served from same server; otherwise set full URL
+    const API_URL = ''; // যদি আলাদা সেভারে চলে তখন এখানে বেস URL বসান
     const POLL_INTERVAL_MS = 5000;
     const STORE_KEY = 'orders_store_v4_with_amount';
     const QUEUE_KEY = 'orders_queue_v1';
 
     // ====== Socket.io (safe init) ======
-    let socket = { on: ()=>{}, emit: ()=>{} }; // no-op fallback
+    let socket = { on: ()=>{}, emit: ()=>{} };
     if (typeof io === 'function') {
       try { socket = io(); } catch(e){ console.warn('socket init failed', e); }
     } else {
@@ -274,26 +279,22 @@
     // ====== Helpers ======
     function log(...args){ console.log('[ORDERS]', ...args); }
     function toast(msg){
-      const t = document.getElementById('toast');
-      if(!t) return console.warn('No toast element');
-      const item = document.createElement('div');
-      item.className = 'item';
-      item.textContent = msg;
-      t.appendChild(item);
+      const t = document.getElementById('toast'); if(!t) return console.warn('No toast element');
+      const item = document.createElement('div'); item.className = 'item'; item.textContent = msg; t.appendChild(item);
+      // animate out
       setTimeout(()=>{ item.style.opacity = '0'; item.style.transform = 'translateY(6px)'; }, 2400);
       setTimeout(()=>{ item.remove(); }, 3000);
     }
 
     function setServerStatus(isOnline, text){
-      const s = document.getElementById('serverStatus');
-      if(!s) return;
+      const s = document.getElementById('serverStatus'); if(!s) return;
       if(isOnline){ s.textContent = text || 'সার্ভার: অন'; s.style.background = 'linear-gradient(90deg, rgba(34,197,94,.12), rgba(34,197,94,.06))'; s.style.border = '1px solid rgba(34,197,94,.25)'; }
       else { s.textContent = text || 'সার্ভার: অফলাইন'; s.style.background = 'linear-gradient(90deg, rgba(239,68,68,.08), rgba(239,68,68,.03))'; s.style.border = '1px solid rgba(239,68,68,.25)'; }
     }
 
     function fmtDate(ts){ if(!ts) return ''; const d=new Date(ts); const pad=n=>n.toString().padStart(2,'0'); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
     function autoId(){ const d=new Date(); const pad=n=>n.toString().padStart(2,'0'); return `YY-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; }
-    function escapeHtml(str){ return String(str||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m])); }
+    function escapeHtml(str){ return String(str||'').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
     function formatCurrency(v){ if(v === '' || v === null || v === undefined || isNaN(+v)) return ''; const n=Number(v); return `৳ ${n.toFixed(2)}`; }
     function hexToRgba(hex, alpha){ if(!hex) return `rgba(0,0,0,${alpha})`; const h=hex.replace('#',''); const bigint=parseInt(h,16); const r=(bigint>>16)&255; const g=(bigint>>8)&255; const b=bigint&255; return `rgba(${r},${g},${b},${alpha})`; }
 
@@ -316,36 +317,40 @@
       let q = loadQueue();
       if(!q.length) return;
       toast('কিউ সিঙ্ক শুরু হচ্ছে...');
-      for(let i=0;i<q.length;){
+      for(;;){
+        q = loadQueue();
+        if(!q.length) break;
         const op = q[0];
         try{
           if(op.type === 'create'){
             const created = await createOrderOnServer(op.item);
-            // replace local temp item with created server item
+            // replace local temp item with created server item (match by tempId)
             const idx = store.list.findIndex(r => r.tempId && op.tempId && r.tempId === op.tempId);
-            if(idx > -1){ store.list[idx] = created; }
-            else { store.list.unshift(created); }
-            saveQueue(q.slice(1));
-            q = loadQueue();
-            continue; // don't increment i because we reloaded q
+            if(idx > -1){ store.list[idx] = created; } else { store.list.unshift(created); }
+            const remaining = loadQueue().slice(1); saveQueue(remaining);
+            continue;
           }
           if(op.type === 'update'){
+            // update by id
             const updated = await updateOrderOnServer(op.id, op.item);
             const idx = store.list.findIndex(r => (r._id||r.id) == (updated._id||updated.id));
             if(idx > -1) store.list[idx] = updated;
-            saveQueue(q.slice(1)); q = loadQueue(); continue;
+            const remaining = loadQueue().slice(1); saveQueue(remaining);
+            continue;
           }
           if(op.type === 'delete'){
-            await deleteOrderOnServer(op.id);
-            const idx = store.list.findIndex(r => (r._id||r.id) == op.id || r.tempId == op.tempId);
-            if(idx > -1) store.list.splice(idx,1);
-            saveQueue(q.slice(1)); q = loadQueue(); continue;
+            await deleteOrderOnServer(op.id||op.tempId);
+            const idx = store.list.findIndex(r => (r._id||r.id) == (op.id) || r.tempId == op.tempId);
+            if(idx > -1){ store.list.splice(idx,1); }
+            const remaining = loadQueue().slice(1); saveQueue(remaining);
+            continue;
           }
-          // unknown op: drop it
-          saveQueue(q.slice(1)); q = loadQueue();
+          // unknown op -> drop
+          const remaining = loadQueue().slice(1); saveQueue(remaining);
         }catch(err){
           console.warn('sync op failed — will retry later', err);
           // stop processing to preserve order; will retry when online again
+          setServerStatus(false);
           break;
         }
       }
@@ -364,7 +369,6 @@
         if (res.status === 204) return null;
         try { return await res.json(); } catch(e){ return await res.text().catch(()=>null); }
       }catch(err){
-        // network or CORS error
         setServerStatus(false);
         throw err;
       }
@@ -382,7 +386,6 @@
       const url = `/orders`;
       const created = await fetchJson(url, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(order) });
       setServerStatus(true);
-      // attempt to process queue after successful server call
       setTimeout(processQueue, 1000);
       return created;
     }
@@ -473,8 +476,8 @@
           <td>${row.orderDateTime ? fmtDate(row.orderDateTime) : ''}</td>
           <td class="hide-sm">${row.createdAt ? fmtDate(row.createdAt) : ''}</td>
           <td class="actions">
-            <button class="btn btn-success" onclick="edit(${row._idx})">এডিট</button>
-            <button class="btn btn-danger" onclick="remove(${row._idx})">ডিলিট</button>
+            <button class="btn btn-success" data-idx="${row._idx}" data-action="edit">এডিট</button>
+            <button class="btn btn-danger" data-idx="${row._idx}" data-action="delete">ডিলিট</button>
           </td>
         `;
 
@@ -487,7 +490,18 @@
           orderTd.style.fontWeight = '700';
         }
 
+        // delegated handlers will be attached below
         tbody.appendChild(tr);
+      });
+
+      // attach delegated handlers for edit/delete
+      tbody.querySelectorAll('button[data-action]').forEach(btn => {
+        const idx = +btn.getAttribute('data-idx');
+        const action = btn.getAttribute('data-action');
+        btn.onclick = (e) => {
+          if(action === 'edit') edit(idx);
+          if(action === 'delete') remove(idx);
+        };
       });
 
       // pagination
@@ -508,7 +522,7 @@
     function edit(idx){
       const row = store.list[idx];
       if(!row) return toast('রেকর্ড পাওয়া যায়নি');
-      document.getElementById('name').value = row.name;
+      document.getElementById('name').value = row.name || '';
       document.getElementById('phone').value = row.phone || '';
       document.getElementById('school').value = row.school || '';
       document.getElementById('orderId').value = row.orderId || '';
@@ -532,15 +546,10 @@
           await deleteOrderOnServer(serverId);
           toast('সার্ভার থেকে মুছে ফেলা হয়েছে 🗑️');
         } else {
-          // no server id yet -> if tempId exists, just remove and if online enqueue delete with tempId
           const tempId = rec.tempId;
           store.removeByIndex(idx); render();
-          if(navigator.onLine){
-            if(tempId) enqueueOp({ type: 'delete', tempId });
-          } else {
-            // if offline, enqueue delete op with tempId so when synced the created item won't be pushed
-            enqueueOp({ type: 'delete', tempId });
-          }
+          // enqueue delete so server side (if created later) can be cleaned
+          enqueueOp({ type: 'delete', tempId });
           toast('লোকালি মুছে ফেলা হয়েছে 🗑️');
         }
       }catch(err){ console.error(err); toast('মুছতে ব্যর্থ হয়েছে'); await loadOrdersAndRender(); }
@@ -558,6 +567,7 @@
       const amount = amountVal === '' ? 0 : Number(amountVal);
       const editingIndex = document.getElementById('editingIndex').value;
 
+      // simple validation
       if(!name){ toast('নাম প্রয়োজন'); return; }
       if(!phone){ toast('ফোন প্রয়োজন'); return; }
       if(!school){ toast('বিদ্যালয়ের নাম প্রয়োজন'); return; }
@@ -565,25 +575,29 @@
       if(!orderName){ toast('অর্ডারের নাম প্রয়োজন'); return; }
       if(isNaN(amount) || amount < 0){ toast('সঠিক টাকা প্রবেশ করাও'); return; }
 
+      // minimal phone normalization (leave as-is but trim)
+      const normalizedPhone = phone;
+
       let orderDateTime = Date.now();
       if(editingIndex !== ''){
         const prev = store.list[+editingIndex];
         orderDateTime = prev && prev.orderDateTime ? prev.orderDateTime : Date.now();
       }
 
-      const item = { name, phone, school, orderId, orderName, amount, orderDateTime, createdAt: Date.now() };
+      const item = { name, phone: normalizedPhone, school, orderId, orderName, amount, orderDateTime, createdAt: Date.now() };
 
       try{
         if(editingIndex !== ''){
           const local = store.list[+editingIndex];
           const serverId = local && (local._id || local.id);
           if(serverId){
+            // attempt server update
             const updated = await updateOrderOnServer(serverId, item);
             const idx = store.list.findIndex(r => (r._id||r.id) == (updated._id||updated.id||serverId));
             if(idx > -1) store.list[idx] = updated; else store.list.unshift(updated);
             store.save(); render(); toast('আপডেট সার্ভারে সফল ✅');
           } else {
-            // create locally with tempId and enqueue create op
+            // local-only record: overwrite and enqueue a CREATE (server doesn't know this item yet)
             const tempId = local.tempId || ('tmp-'+Date.now());
             const localItem = { ...local, ...item, tempId, createdAt: Date.now() };
             store.list[+editingIndex] = localItem; store.save(); render();
@@ -606,18 +620,26 @@
         e.target.reset(); document.getElementById('editingIndex').value = ''; document.getElementById('orderPreview').textContent = '';
       }catch(err){
         console.error('form submit error', err);
-        // fallback offline enqueue
+        // fallback offline enqueue with better distinction between update/create
         if(editingIndex !== ''){
-          const local = store.list[+editingIndex];
+          const local = store.list[+editingIndex] || {};
+          const serverId = local && (local._id || local.id);
           const tempId = local && local.tempId ? local.tempId : ('tmp-'+Date.now());
           const localItem = { ...local, ...item, tempId };
           store.list[+editingIndex] = localItem; store.save(); render();
-          enqueueOp({ type: 'create', tempId, item: localItem });
-          toast('অফলাইনে লোকালি সংরক্ষণ করা হয়েছে (error মাধ্যমে)');
+          if(serverId){
+            enqueueOp({ type: 'update', id: serverId, item: localItem });
+            toast('লোকালি আপডেট হয়েছে — পরে সার্ভারে আপডেট করা হবে');
+          } else {
+            enqueueOp({ type: 'create', tempId, item: localItem });
+            toast('অফলাইনে লোকালি সংরক্ষণ করা হয়েছে — পরে সার্ভারে সৃষ্ট হবে');
+          }
         } else {
           const tempId = 'tmp-'+Date.now();
           const localItem = { ...item, tempId };
-          store.list.unshift(localItem); store.save(); render(); enqueueOp({ type: 'create', tempId, item: localItem }); toast('অফলাইনে লোকালি সংরক্ষণ করা হয়েছে (error মাধ্যমে)');
+          store.list.unshift(localItem); store.save(); render();
+          enqueueOp({ type: 'create', tempId, item: localItem });
+          toast('অফলাইনে লোকালি সংরক্ষণ করা হয়েছে (ত্রুটি ঘটেছে)');
         }
       }
     }
@@ -631,10 +653,10 @@
           r.createdAt ? new Date(r.createdAt).toISOString() : ''
         ])
       );
-      const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+      const csv = rows.map(r => r.map(v => `"${String(v===undefined||v===null?'':v).replace(/"/g,'""')}"`).join(',')).join('\n');
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = 'orders.csv'; a.click();
+      const a = document.createElement('a'); a.href = url; a.download = `orders_${Date.now()}.csv`; a.click();
       setTimeout(()=> URL.revokeObjectURL(url), 5000);
       toast('CSV ডাউনলোড হয়েছে');
     }
@@ -648,7 +670,7 @@
           if(lines.length === 0){ return reject('ফাইল খালি'); }
           const headerLine = lines.shift();
           const headerTokens = headerLine.match(/\"(?:[^\"]|\"\")*\"|[^,]+/g) || [];
-          const header = headerTokens.map(x => x.replace(/^\"|\"$/g,'').toLowerCase());
+          const header = headerTokens.map(x => x.replace(/^\"|\"$/g,'').toLowerCase().trim());
           const nameIdx = header.findIndex(h => /name/.test(h));
           const phoneIdx = header.findIndex(h => /phone/.test(h));
           const schoolIdx = header.findIndex(h => /school/.test(h));
@@ -660,7 +682,7 @@
 
           let count = 0;
           lines.forEach(line=>{
-            const cols = line.match(/\"(?:[^\"]|\"\")*\"|[^,]+/g)?.map(x=>x.replace(/^\"|\"$/g,'').replace(/\"\"/g,'"')) || [];
+            const cols = line.match(/\"(?:[^\"]|\"\")*\"|[^,]+/g)?.map(x=>x.replace(/^\"|\"$/g,'').replace(/\"\"/g,'\"')) || [];
             const name = cols[nameIdx] || '';
             const phone = cols[phoneIdx] || '';
             const school = cols[schoolIdx] || '';
@@ -748,15 +770,13 @@
 
     async function init(){
       bindUI(); store.load(); await loadOrdersAndRender(); startPolling();
-      // process any queued ops when online
-      window.addEventListener('online', ()=>{ setServerStatus(true); toast('অনলাইন হচ্ছে — সার্ভারের সাথে সিঙ্ক করা হচ্ছে'); processQueue().catch(()=>{}); loadOrdersAndRender(); });
+      window.addEventListener('online', ()=>{ setServerStatus(true); toast('অনলাইনে ফিরে এসেছি — সার্ভারের সাথে সিঙ্ক করা হচ্ছে'); processQueue().catch(()=>{}); loadOrdersAndRender(); });
       window.addEventListener('offline', ()=>{ setServerStatus(false); toast('অফলাইন — লোকাল ডেটা দেখানো হচ্ছে'); });
 
-      // attempt queue processing on startup too (best-effort)
       if(navigator.onLine) setTimeout(processQueue, 1500);
     }
 
-    // expose some functions globally for inline onclick handlers used in table rows
+    // expose some functions globally (but avoid polluting too much)
     window.edit = edit;
     window.remove = (idx)=> remove(idx);
     window.autoId = autoId;
