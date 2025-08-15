@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="bn">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>অর্ডার ডাটা ম্যানেজার — আপডেটেড</title>
+  <meta name="description" content="নাম, ফোন, বিদ্যালয়, আইডি, অর্ডারের নাম, টাকা — সংরক্ষণ, দেখা, এডিট, ডিলিট, সার্চ, এক্সপোর্ট/ইম্পোর্ট।"> 
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; font-family: ui-sans-serif, -apple-system, Segoe UI, Roboto, Noto Sans Bengali, Noto Sans, Helvetica, Arial, "Bangla MN", sans-serif; }
+    :root {
+      --bg: #0b1020;
+      --panel: #121933;
+      --panel-2: #10172a;
+      --soft: #0e1429;
+      --text: #e6ebff;
+      --muted: #a6b0d6;
+      --brand: #6ea8fe;
+      --brand-2: #9b9efe;
+      --ok: #32d583;
+      --warn: #f79009;
+      --err: #ef4444;
+      --ring: rgba(110,168,254,.55);
+      --shadow: 0 10px 30px rgba(2,8,23,.5), 0 2px 10px rgba(2,8,23,.35);
+      --radius: 14px;
+    }
+
+    body { background: radial-gradient(1200px 800px at 20% 0%, #0e1533 0%, #0b1020 50%, #090c1a 100%); color: var(--text); font-size:15px; }
+
+    .container { max-width: 1200px; margin: 20px auto; padding: 0 14px; }
+    header { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+
+    .logo { width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, var(--brand), var(--brand-2)); display: grid; place-items: center; box-shadow: var(--shadow); }
+    .logo svg { width: 26px; height: 26px; fill: white; }
+
+    h1 { font-size: clamp(18px, 3vw, 26px); margin: 0; letter-spacing: .2px; }
+    .muted { color: var(--muted); font-size: 13px; }
+
+    .grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+    @media (min-width: 980px){ .grid { grid-template-columns: 420px 1fr; } }
+
+    .card { background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%); border: 1px solid #243056; border-radius: var(--radius); box-shadow: var(--shadow); }
+    .card-header { padding: 14px 16px; border-bottom: 1px solid #1e284b; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .card-body { padding: 14px; }
+
+    form .row { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    @media (min-width: 720px){ form .row { grid-template-columns: 1fr 1fr; } }
+
+    label { font-size: 13px; color: var(--muted); display:block; margin-bottom: 6px; }
+    input[type="text"], input[type="search"], input[type="file"], input[type="number"], select {
+      width: 100%; padding: 10px 12px; border-radius: 10px; background: #0b1430; color: var(--text);
+      border: 1px solid #233056; outline: none; transition: .16s border, .16s box-shadow; font-size:14px;
+    }
+    input:focus, select:focus { border-color: var(--brand); box-shadow: 0 0 0 4px var(--ring); }
+
+    .btns { display:flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+    .btn { border: none; padding: 10px 12px; border-radius: 10px; color: white; background: #2b3a70; cursor: pointer; transition: .12s transform, .12s opacity, .12s background; display:inline-flex; align-items:center; gap:8px; font-size:14px; }
+    .btn:hover { transform: translateY(-2px); opacity: .98; }
+    .btn:active { transform: translateY(0px) scale(.99); }
+    .btn-primary { background: linear-gradient(135deg, var(--brand), var(--brand-2)); }
+    .btn-success { background: linear-gradient(135deg, #15b27e, var(--ok)); }
+    .btn-warning { background: linear-gradient(135deg, #f59e0b, var(--warn)); }
+    .btn-danger { background: linear-gradient(135deg, #ef4444, #f87171); }
+    .btn-ghost { background: #111a36; }
+    .btn svg { width: 16px; height: 16px; fill: currentColor; }
+
+    .help { font-size: 12px; color: var(--muted); margin-top: 6px; }
+
+    .toolbar { display:flex; flex-wrap: wrap; gap: 10px; align-items:center; margin-bottom: 8px; }
+    .spacer { flex: 1; }
+
+    /* Table */
+    .table-wrap { overflow:auto; max-height: 560px; border-radius: 12px; }
+    table { width: 100%; border-collapse: collapse; min-width: 820px; }
+    thead th { text-align: left; font-size: 13px; color: var(--muted); background: #0c1633; border-bottom: 1px solid #1d274a; padding: 12px; cursor: pointer; user-select: none; position:sticky; top:0; z-index:1; }
+    tbody td { padding: 12px; border-bottom: 1px solid #162145; vertical-align: middle; }
+    tbody tr:hover { background: #0d1a3d; }
+
+    .pill { display:inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; background:#15224a; color:#ccd6ff; border:1px solid #223165; }
+
+    .actions { display:flex; gap: 6px; }
+
+    .pagination { display:flex; gap: 8px; align-items:center; justify-content:flex-end; margin-top: 10px; }
+    .page-btn { padding: 8px 12px; border-radius: 10px; border:1px solid #243056; background:#0f1836; color:var(--text); cursor:pointer; }
+    .page-btn[disabled] { opacity:.5; cursor:not-allowed; }
+
+    .toast { position: fixed; right: 16px; bottom: 16px; display: grid; gap: 10px; z-index: 50; }
+    .toast .item { background:#0f1938; border:1px solid #203060; padding: 10px 12px; border-radius: 10px; box-shadow: var(--shadow); }
+
+    .badge { font-size: 12px; padding: 6px 10px; background:#0f1b40; border:1px solid #223162; border-radius: 999px; color:#cdd7ff; }
+    .brand-grad { background: linear-gradient(90deg, rgba(110,168,254,.15), rgba(155,158,254,.15)); border: 1px solid rgba(110,168,254,.35); }
+
+    .hide-sm { display:none; }
+    @media (min-width: 640px){ .hide-sm { display: table-cell; } }
+
+    /* Over-limit styling with alternating color per 10-count bucket */
+    tr.over-limit-red td { border-left: 4px solid var(--err); background: linear-gradient(90deg, rgba(239,68,68,0.06), rgba(239,68,68,0.03)); }
+    tr.over-limit-green td { border-left: 4px solid var(--ok); background: linear-gradient(90deg, rgba(50,213,131,0.06), rgba(50,213,131,0.03)); }
+    .order-id.over-red { color: var(--err); font-weight: 700; }
+    .order-id.over-green { color: var(--ok); font-weight: 700; }
+
+
+    /* small-screen card view for accessibility */
+    @media (max-width: 860px){
+      table { min-width: 100%; }
+    }
+    @media (max-width: 560px){
+      .card-header { padding: 12px; }
+      .btns { gap:8px; }
+      .btn { padding:8px 10px; font-size:13px; }
+      .toolbar { gap:8px; }
+      .muted { font-size:12px; }
+    }
+
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 3l8.66 5v8L12 21l-8.66-5V8L12 3zm0 2.2L5.5 9v6L12 18.8 18.5 15V9L12 5.2zM9 10h6v2H9v-2zm0 3h4v2H9v-2z"/></svg>
+      </div>
+      <div>
+        <h1>অর্ডার ডাটা ম্যানেজার</h1>
+        <div class="muted">নতুন: অর্ডারের নাম ও টাকার ফিল্ড যোগ করা হয়েছে। একই আইডি-তে ১০+ হওয়া সেক্ষেত্রে রেড হাইলাইট।</div>
+      </div>
+      <div class="spacer"></div>
+      <span class="badge brand-grad">LocalStorage enabled</span>
+    </header>
+
+    <div class="grid">
+      <!-- LEFT: FORM CARD -->
+      <section class="card" aria-labelledby="formTitle">
+        <div class="card-header">
+          <strong id="formTitle">নতুন / আপডেট অর্ডার</strong>
+          <button class="btn btn-ghost" id="btnClearForm" type="button" title="ফর্ম ক্লিয়ার">
+            <svg viewBox="0 0 24 24"><path d="M3 6h18v2H3V6zm2 4h14l-1.5 9.5a2 2 0 0 1-2 1.5H8.5a2 2 0 0 1-2-1.5L5 10zm5-7h4v2h-4V3z"/></svg>
+            ক্লিয়ার
+          </button>
+        </div>
+        <div class="card-body">
+          <form id="orderForm" autocomplete="off">
+            <input type="hidden" id="editingIndex" value="" />
+
+            <div class="row">
+              <div>
+                <label for="name">নাম</label>
+                <input type="text" id="name" placeholder="উদাহরণ: রাজু হাসান" required />
+              </div>
+              <div>
+                <label for="orderId">আইডি নম্বর</label>
+                <input type="text" id="orderId" placeholder="উদাহরণ: YY-2025-0001" required />
+                <div class="help">ইচ্ছা করলে <em>Auto ID</em> দিয়ে আইডি জেনারেট করতে পারো।</div>
+              </div>
+            </div>
+
+            <div class="row">
+              <div>
+                <label for="orderName">অর্ডারের নাম</label>
+                <input type="text" id="orderName" placeholder="উদাহরণ: বই/পেন/টিফিন" required />
+              </div>
+              <div>
+                <label for="amount">টাকা (৳)</label>
+                <input type="number" id="amount" placeholder="উদাহরণ: 500" min="0" step="0.01" required />
+              </div>
+            </div>
+
+            <div class="row" style="margin-top:6px;">
+              <div>
+                <label for="phone">ফোন নাম্বার</label>
+                <input type="text" id="phone" placeholder="উদাহরণ: 017XXXXXXXX" required />
+              </div>
+              <div>
+                <label for="school">বিদ্যালয়ের নাম</label>
+                <input type="text" id="school" placeholder="উদাহরণ: ঢাকা কলেজ" required />
+              </div>
+            </div>
+
+            <div class="help" id="orderPreview" style="margin-top:10px;"></div>
+
+            <div class="btns">
+              <button class="btn btn-primary" type="submit" id="btnSave">
+                <svg viewBox="0 0 24 24"><path d="M5 5h14v14H5V5zm2 2v10h10V7H7zm2 2h6v2H9V9z"/></svg>
+                সংরক্ষণ
+              </button>
+              <button class="btn btn-success" type="button" id="btnAutoId">
+                <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm1 5v5l4 2-.9 1.8L11 13V7h2z"/></svg>
+                Auto ID
+              </button>
+              <button class="btn btn-warning" type="button" id="btnExport">
+                <svg viewBox="0 0 24 24"><path d="M5 20h14v-2H5v2zM12 3l5 5h-3v6h-4V8H7l5-5z"/></svg>
+                Export CSV
+              </button>
+              <label class="btn btn-ghost" for="importCsv">
+                <svg viewBox="0 0 24 24"><path d="M19 15v4H5v-4H3v6h18v-6h-2zM11 4v8H8l4 4 4-4h-3V4h-2z"/></svg>
+                Import CSV
+              </label>
+              <input id="importCsv" type="file" accept=".csv" style="display:none" />
+              <button class="btn btn-danger" type="button" id="btnClearAll">
+                <svg viewBox="0 0 24 24"><path d="M6 7h12l-1 12H7L6 7zm3-4h6l1 3H8l1-3z"/></svg>
+                সব ডাটা মুছো
+              </button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <!-- RIGHT: TABLE CARD -->
+      <section class="card" aria-labelledby="listTitle">
+        <div class="card-header">
+          <strong id="listTitle">অর্ডার তালিকা</strong>
+          <div class="toolbar">
+            <input type="search" id="search" placeholder="সার্চ: নাম, অর্ডারের নাম, আইডি, ফোন..." />
+            <div class="spacer"></div>
+            <select id="pageSize">
+              <option value="10">প্রতি পেজে 10</option>
+              <option value="20">20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="table-wrap">
+            <table id="dataTable">
+              <thead>
+                <tr>
+                  <th data-key="idx">#</th>
+                  <th data-key="name">নাম</th>
+                  <th data-key="orderName">অর্ডারের নাম</th>
+                  <th data-key="amount">টাকা</th>
+                  <th data-key="phone">ফোন</th>
+                  <th data-key="school">বিদ্যালয়</th>
+                  <th data-key="orderId">আইডি নম্বর</th>
+                  <th data-key="orderDateTime">অর্ডারের সময়</th>
+                  <th class="hide-sm" data-key="createdAt">সংযুক্ত</th>
+                  <th>অ্যাকশন</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="pagination" id="pagination"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // ===== Utility: Toast =====
+    function toast(msg){
+      const t = document.getElementById('toast');
+      const item = document.createElement('div');
+      item.className = 'item';
+      item.textContent = msg;
+      t.appendChild(item);
+      setTimeout(()=>{ item.style.opacity = '0'; item.style.transform = 'translateY(6px)'; }, 2400);
+      setTimeout(()=>{ item.remove(); }, 3000);
+    }
+
+    // ===== Store =====
+    const STORE_KEY = 'orders_store_v4_with_amount';
+    const store = {
+      list: [],
+      load(){ try { this.list = JSON.parse(localStorage.getItem(STORE_KEY)) || []; } catch { this.list = []; } },
+      save(){ localStorage.setItem(STORE_KEY, JSON.stringify(this.list)); },
+      upsert(index, item){ 
+        if(index === '' || index === null || index === undefined){ this.list.push(item); }
+        else { this.list[index] = item; }
+        this.save();
+      },
+      remove(index){ this.list.splice(index,1); this.save(); },
+      clear(){ this.list = []; this.save(); }
+    };
+
+    // ===== State =====
+    let state = { sortKey: 'createdAt', sortDir: 'desc', page:1, pageSize:10, query:'' };
+
+    // ===== Helpers =====
+    function fmtDate(ts){
+      if(!ts) return '';
+      const d = new Date(ts);
+      const pad = n => n.toString().padStart(2,'0');
+      return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+
+    function autoId(){
+      const d = new Date();
+      const pad = n => n.toString().padStart(2,'0');
+      return `YY-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    }
+
+    function escapeHtml(str){ return String(str||'').replace(/[&<>"]|'/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#039;"})[m]); }
+
+    function formatCurrency(v){
+      if(v === '' || v === null || v === undefined || isNaN(+v)) return '';
+      const n = Number(v);
+      return `৳ ${n.toFixed(2)}`;
+    }
+
+    // convert hex like #rrggbb to rgba string with alpha
+    function hexToRgba(hex, alpha){
+      if(!hex) return `rgba(0,0,0,${alpha})`;
+      const h = hex.replace('#','');
+      const bigint = parseInt(h,16);
+      const r = (bigint >> 16) & 255;
+      const g = (bigint >> 8) & 255;
+      const b = bigint & 255;
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+
+    // ===== Render =====
+    function render(){
+      const q = state.query.toLowerCase();
+
+      // compute counts per orderId (global)
+      const counts = {};
+      store.list.forEach(r => { const k = (r.orderId||'').toString(); counts[k] = (counts[k]||0) + 1; });
+
+      const filtered = store.list.map((x, idx) => ({...x, _idx: idx}))
+        .filter(row => {
+          return (
+            (row.name||'').toString().toLowerCase().includes(q) ||
+            (row.orderName||'').toString().toLowerCase().includes(q) ||
+            (row.orderId||'').toString().toLowerCase().includes(q) ||
+            (row.phone||'').toString().toLowerCase().includes(q) ||
+            (row.school||'').toString().toLowerCase().includes(q)
+          );
+        });
+
+      filtered.sort((a,b)=>{
+        const k = state.sortKey;
+        let va = a[k] !== undefined ? a[k] : '';
+        let vb = b[k] !== undefined ? b[k] : '';
+        if(typeof va === 'string') va = va.toLowerCase();
+        if(typeof vb === 'string') vb = vb.toLowerCase();
+        if(va > vb) return state.sortDir === 'asc' ? 1 : -1;
+        if(va < vb) return state.sortDir === 'asc' ? -1 : 1;
+        return 0;
+      });
+
+      const total = filtered.length;
+      const pages = Math.max(1, Math.ceil(total / state.pageSize));
+      if(state.page > pages) state.page = pages;
+      const start = (state.page - 1) * state.pageSize;
+      const rows = filtered.slice(start, start + state.pageSize);
+
+      const tbody = document.querySelector('#dataTable tbody');
+      tbody.innerHTML = '';
+
+      rows.forEach((row, i) => {
+        const tr = document.createElement('tr');
+        const countForId = counts[(row.orderId||'').toString()] || 0;
+
+        // // Determine bucket: every 10 items gets its own bucket and unique color
+        // bucketIndex: 10-19 => 0, 20-29 => 1, 30-39 => 2, ...
+        if(countForId >= 10){
+          const bucketIndex = Math.floor((countForId - 10) / 10);
+          const palette = [
+            '#ef4444', // red
+            '#10b981', // green
+            '#f59e0b', // amber
+            '#7c3aed', // violet
+            '#06b6d4', // cyan
+            '#f97316', // orange
+            '#db2777', // pink
+            '#0ea5e9', // sky
+            '#8b5cf6', // purple
+            '#16a34a'  // emerald
+          ];
+          const color = palette[bucketIndex % palette.length];
+
+          // apply styles inline so each bucket gets a distinct color
+          tr.classList.add('over-limit');
+          tr.style.borderLeft = `4px solid ${color}`;
+          tr.style.background = `linear-gradient(90deg, ${hexToRgba(color,0.06)}, ${hexToRgba(color,0.03)})`;
+        }
+
+        const amountDisplay = formatCurrency(row.amount);
+
+        tr.innerHTML = `
+          <td>${start + i + 1}</td>
+          <td><span class="pill">${escapeHtml(row.name)}</span></td>
+          <td>${escapeHtml(row.orderName || '')}</td>
+          <td>${amountDisplay}</td>
+          <td>${escapeHtml(row.phone)}</td>
+          <td>${escapeHtml(row.school)}</td>
+          <td class="order-id">${escapeHtml(row.orderId)}${countForId>1? ' • '+countForId+ ' টি':''}</td>
+          <td>${row.orderDateTime ? fmtDate(row.orderDateTime) : ''}</td>
+          <td class="hide-sm">${row.createdAt ? fmtDate(row.createdAt) : ''}</td>
+          <td class="actions">
+            <button class="btn btn-success" onclick="edit(${row._idx})">এডিট</button>
+            <button class="btn btn-danger" onclick="remove(${row._idx})">ডিলিট</button>
+          </td>
+        `;
+
+        // after setting innerHTML, apply order-id color if over-limit
+        const orderTd = tr.querySelector('.order-id');
+        if(orderTd && countForId >= 10){
+          const bucketIndex = Math.floor((countForId - 10) / 10);
+          const palette = ['#ef4444','#10b981','#f59e0b','#7c3aed','#06b6d4','#f97316','#db2777','#0ea5e9','#8b5cf6','#16a34a'];
+          const color = palette[bucketIndex % palette.length];
+          orderTd.style.color = color;
+          orderTd.style.fontWeight = '700';
+        }
+
+        tbody.appendChild(tr);
+      });
+
+      // pagination
+      const pg = document.getElementById('pagination');
+      pg.innerHTML = '';
+      const info = document.createElement('div');
+      info.style.marginRight = 'auto';
+      info.style.alignSelf = 'center';
+      info.style.color = 'var(--muted)';
+      info.textContent = `পেজ ${state.page}/${pages} • মোট ${total}`;
+      pg.appendChild(info);
+      const prev = document.createElement('button');
+      prev.className = 'page-btn';
+      prev.textContent = 'পূর্ববর্তী';
+      prev.disabled = state.page <= 1;
+      prev.onclick = ()=>{ if(state.page>1){ state.page--; render(); } };
+      const next = document.createElement('button');
+      next.className = 'page-btn';
+      next.textContent = 'পরবর্তী';
+      next.disabled = state.page >= pages;
+      next.onclick = ()=>{ if(state.page<pages){ state.page++; render(); } };
+      pg.appendChild(prev);
+      pg.appendChild(next);
+    }
+
+    // ===== Edit / Remove =====
+    function edit(idx){
+      const row = store.list[idx];
+      document.getElementById('name').value = row.name;
+      document.getElementById('phone').value = row.phone || '';
+      document.getElementById('school').value = row.school || '';
+      document.getElementById('orderId').value = row.orderId || '';
+      document.getElementById('orderName').value = row.orderName || '';
+      document.getElementById('amount').value = row.amount !== undefined ? row.amount : '';
+      document.getElementById('editingIndex').value = idx;
+      const pv = document.getElementById('orderPreview');
+      pv.textContent = row.orderDateTime ? `অর্ডারের সময় (সংরক্ষিত): ${fmtDate(row.orderDateTime)}` : '';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function remove(idx){
+      if(confirm('নিশ্চিতভাবে মুছতে চাও?')){
+        store.remove(idx);
+        render();
+        toast('মুছে ফেলা হয়েছে 🗑️');
+      }
+    }
+
+    // ===== Events =====
+    document.getElementById('orderForm').addEventListener('submit', (e)=>{
+      e.preventDefault();
+      const name = document.getElementById('name').value.trim();
+      const phone = document.getElementById('phone').value.trim();
+      const school = document.getElementById('school').value.trim();
+      const orderId = document.getElementById('orderId').value.trim();
+      const orderName = document.getElementById('orderName').value.trim();
+      const amountVal = document.getElementById('amount').value;
+      const amount = amountVal === '' ? 0 : Number(amountVal);
+      const editingIndex = document.getElementById('editingIndex').value;
+
+      if(!name) { toast('নাম প্রয়োজন'); return; }
+      if(!phone) { toast('ফোন প্রয়োজন'); return; }
+      if(!school) { toast('বিদ্যালয়ের নাম প্রয়োজন'); return; }
+      if(!orderId) { toast('আইডি প্রয়োজন'); return; }
+      if(!orderName) { toast('অর্ডারের নাম প্রয়োজন'); return; }
+      if(isNaN(amount) || amount < 0){ toast('সঠিক টাকা প্রবেশ করাও'); return; }
+
+      // orderDateTime: auto-set for NEW; for EDIT keep previous saved orderDateTime
+      let orderDateTime = Date.now();
+      if(editingIndex !== ''){
+        const prev = store.list[+editingIndex];
+        orderDateTime = prev && prev.orderDateTime ? prev.orderDateTime : Date.now();
+      }
+
+      const item = {
+        name,
+        phone,
+        school,
+        orderId,
+        orderName,
+        amount,
+        orderDateTime,
+        createdAt: Date.now()
+      };
+
+      if(editingIndex !== ''){
+        // preserve original createdAt if present
+        item.createdAt = store.list[+editingIndex]?.createdAt || item.createdAt;
+      }
+
+      store.upsert(editingIndex !== '' ? +editingIndex : '', item);
+      toast(editingIndex !== '' ? 'আপডেট সম্পন্ন ✅' : 'সংরক্ষণ সম্পন্ন ✅');
+      e.target.reset();
+      document.getElementById('editingIndex').value = '';
+      document.getElementById('orderPreview').textContent = '';
+      render();
+    });
+
+    document.getElementById('btnClearForm').addEventListener('click', ()=>{
+      document.getElementById('orderForm').reset();
+      document.getElementById('editingIndex').value = '';
+      document.getElementById('orderPreview').textContent = '';
+      toast('ফর্ম ক্লিয়ার হয়েছে');
+    });
+
+    document.getElementById('btnAutoId').addEventListener('click', ()=>{ document.getElementById('orderId').value = autoId(); toast('Auto ID সেট হয়েছে'); });
+
+    document.getElementById('search').addEventListener('input', (e)=>{ state.query = e.target.value; state.page = 1; render(); });
+    document.getElementById('pageSize').addEventListener('change', (e)=>{ state.pageSize = +e.target.value; state.page = 1; render(); });
+
+    document.getElementById('btnClearAll').addEventListener('click', ()=>{
+      if(confirm('সব ডাটা স্থায়ীভাবে মুছে যাবে। নিশ্চিত?')){
+        store.clear();
+        render();
+        toast('সব ডাটা মুছে ফেলা হয়েছে');
+      }
+    });
+
+    // ===== Export CSV =====
+    document.getElementById('btnExport').addEventListener('click', ()=>{
+      const rows = [["name","phone","school","order_name","amount","order_id","order_datetime","created_at"]].concat(
+        store.list.map(r=>[
+          r.name, r.phone, r.school, r.orderName, r.amount, r.orderId,
+          r.orderDateTime ? new Date(r.orderDateTime).toISOString() : '',
+          r.createdAt ? new Date(r.createdAt).toISOString() : ''
+        ])
+      );
+      const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'orders.csv'; a.click(); URL.revokeObjectURL(a.href);
+      toast('CSV ডাউনলোড হয়েছে');
+    });
+
+    // ===== Import CSV =====
+    document.getElementById('importCsv').addEventListener('change', (e)=>{
+      const file = e.target.files[0]; if(!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = reader.result;
+        const lines = text.split(/\r?\n/).filter(Boolean);
+        if(lines.length === 0){ toast('ফাইল খালি'); e.target.value = ''; return; }
+        const header = lines.shift().split(',').map(x => x.replace(/^\"|\"$/g,'').toLowerCase());
+        const nameIdx = header.findIndex(h => /name/.test(h));
+        const phoneIdx = header.findIndex(h => /phone/.test(h));
+        const schoolIdx = header.findIndex(h => /school/.test(h));
+        const orderNameIdx = header.findIndex(h => /order[_ ]?name/.test(h));
+        const amountIdx = header.findIndex(h => /amount|price|money|টাকা/.test(h));
+        const orderIdIdx = header.findIndex(h => /(order[_ ]?id|id)/.test(h));
+        const orderTimeIdx = header.findIndex(h => /(order[_ ]?datetime|order_time|order_datetime)/.test(h));
+        const createdIdx = header.findIndex(h => /created/.test(h));
+
+        let count = 0;
+        lines.forEach(line=>{
+          const cols = line.match(/\"(?:[^\"]|\"\")*\"|[^,]+/g)?.map(x=>x.replace(/^\"|\"$/g,'').replace(/\"\"/g,'"')) || [];
+          const name = cols[nameIdx] || '';
+          const phone = cols[phoneIdx] || '';
+          const school = cols[schoolIdx] || '';
+          const orderName = cols[orderNameIdx] || '';
+          const amount = amountIdx > -1 ? Number(cols[amountIdx]) : 0;
+          const orderId = cols[orderIdIdx] || '';
+          const orderDateTime = orderTimeIdx > -1 ? Date.parse(cols[orderTimeIdx]) : Date.now();
+          const createdAt = createdIdx > -1 ? Date.parse(cols[createdIdx]) : Date.now();
+          if(name && orderId){
+            store.list.push({
+              name,
+              phone,
+              school,
+              orderName,
+              amount: isNaN(amount) ? 0 : amount,
+              orderId,
+              orderDateTime: isNaN(orderDateTime) ? Date.now() : orderDateTime,
+              createdAt: isNaN(createdAt) ? Date.now() : createdAt
+            });
+            count++;
+          }
+        });
+        store.save();
+        render();
+        toast(`${count} টি রেকর্ড ইম্পোর্ট হয়েছে`);
+        e.target.value = '';
+      };
+      reader.readAsText(file, 'utf-8');
+    });
+
+    // ===== Init =====
+    store.load();
+    render();
+  </script>
+</body>
+</html>
