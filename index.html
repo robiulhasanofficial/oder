@@ -249,17 +249,20 @@
   <div class="toast" id="toast"></div>
 
   <script>
-    const API_URL = 'https://oder-gjta.onrender.com'; // ব্যাকএন্ড URL
+    // base API
+const API_URL = 'https://oder-gjta.onrender.com'; // backend base
 
+// loadOrders -> GET /orders
 async function loadOrders() {
-  const res = await fetch(API_URL);
+  const res = await fetch(`${API_URL}/orders`);
   const orders = await res.json();
   console.log('Orders:', orders);
-  // এখানে তুমি orders দিয়ে HTML টেবিলে রেন্ডার করতে পারো
+  // render orders into store.list বা direct use
 }
 
+// saveOrder -> POST /orders
 async function saveOrder(order) {
-  const res = await fetch(API_URL, {
+  const res = await fetch(`${API_URL}/orders`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(order)
@@ -269,8 +272,9 @@ async function saveOrder(order) {
   loadOrders();
 }
 
+// updateOrder -> PUT /orders/:id
 async function updateOrder(id, order) {
-  const res = await fetch(`${API_URL}/${id}`, {
+  const res = await fetch(`${API_URL}/orders/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(order)
@@ -280,15 +284,13 @@ async function updateOrder(id, order) {
   loadOrders();
 }
 
+// deleteOrder -> DELETE /orders/:id
 async function deleteOrder(id) {
-  const res = await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
+  const res = await fetch(`${API_URL}/orders/${id}`, { method: 'DELETE' });
   const data = await res.json();
   console.log(data.message);
   loadOrders();
 }
-
-// Initial load
-loadOrders();
 
     // ===== Utility: Toast =====
     function toast(msg){
