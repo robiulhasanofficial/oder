@@ -5,7 +5,7 @@ const mongoose = require("mongoose");
 
 const app = express();
 
-// CORS: যদি তুমি নির্দিষ্ট ডোমেইন চান, '*' এর বদলে তা ব্যবহার করো
+// CORS: প্রয়োজনমত origin সীমাবদ্ধ করুন
 app.use(cors());
 app.use(express.json());
 
@@ -36,7 +36,7 @@ const orderSchema = new mongoose.Schema({
   phone: String,
   school: String,
   orderName: String,
-  orderId: { type: String, required: true },
+  orderId: { type: String, required: true, index: true },
   amount: { type: Number, default: 0 },
   orderDateTime: { type: Date, default: Date.now },
   status: { type: String, default: "pending" }
@@ -64,8 +64,10 @@ app.post("/orders", async (req, res) => {
     }
     const newOrder = new Order(payload);
     await newOrder.save();
-    res.status(201).json({ success: true, message: "Order saved successfully!", data: newOrder });
+    // Important: return the created order object directly (not wrapped)
+    return res.status(201).json(newOrder);
   } catch (err) {
+    console.error('POST /orders error', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -76,28 +78,68 @@ app.get("/orders", async (req, res) => {
     const orders = await Order.find().sort({ createdAt: -1 });
     res.json(orders);
   } catch (err) {
+    console.error('GET /orders error', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Update Order
+// Update Order (by Mongo _id)
 app.put("/orders/:id", async (req, res) => {
   try {
     const updated = await Order.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if(!updated) return res.status(404).json({ success:false, message: "Order পাওয়া যায়নি" });
-    res.json({ success: true, message: "Order updated successfully!", data: updated });
+    // return the updated document directly
+    return res.json(updated);
   } catch (err) {
+    console.error('PUT /orders/:id error', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Delete Order
+// Delete Order by Mongo _id
 app.delete("/orders/:id", async (req, res) => {
   try {
     const deleted = await Order.findByIdAndDelete(req.params.id);
     if(!deleted) return res.status(404).json({ success:false, message: "Order পাওয়া যায়নি" });
-    res.json({ success: true, message: "Order deleted successfully!" });
+    return res.json({ success: true, message: "Order deleted successfully!" });
   } catch (err) {
+    console.error('DELETE /orders/:id error', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// --- Additional convenience endpoints so client fallbacks succeed ---
+
+// DELETE by orderId via query param: DELETE /orders?orderId=YY-...
+app.delete("/orders", async (req, res) => {
+  try {
+    const { orderId } = req.query;
+    if(!orderId) return res.status(400).json({ success:false, message: "orderId query parameter required" });
+    const deleted = await Order.findOneAndDelete({ orderId });
+    if(!deleted) return res.status(404).json({ success:false, message: "Order পাওয়া যায়নি (by orderId)" });
+    return res.json({ success: true, message: "Order deleted by orderId", data: deleted });
+  } catch (err) {
+    console.error('DELETE /orders (by query) error', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// POST /orders/delete  with body { id, orderId }  (fallback that some clients use)
+app.post("/orders/delete", async (req, res) => {
+  try {
+    const { id, orderId } = req.body || {};
+    let deleted = null;
+    if(id){
+      deleted = await Order.findByIdAndDelete(id);
+    } else if(orderId){
+      deleted = await Order.findOneAndDelete({ orderId });
+    } else {
+      return res.status(400).json({ success:false, message: "Provide id or orderId in body" });
+    }
+    if(!deleted) return res.status(404).json({ success:false, message: "Order পাওয়া যায়নি" });
+    return res.json({ success: true, message: "Order deleted (fallback)", data: deleted });
+  } catch (err) {
+    console.error('POST /orders/delete error', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
