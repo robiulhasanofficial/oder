@@ -294,7 +294,13 @@
 
     function fmtDate(ts){ if(!ts) return ''; const d=new Date(ts); const pad=n=>n.toString().padStart(2,'0'); return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
     function autoId(){ const d=new Date(); const pad=n=>n.toString().padStart(2,'0'); return `YY-${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`; }
-    function escapeHtml(str){ return String(str||'').replace(/[&<>"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+    function escapeHtml(str){ return String(str||'').replace(/[&<>\"]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m])); }
+    function uidOf(item, idx){
+      // prefer server id, then tempId; fallback to a stable local-id
+      if(item && (item._id || item.id)) return (item._id || item.id).toString();
+      if(item && item.tempId) return item.tempId.toString();
+      return '__local_' + (item && item.__localId ? item.__localId : ('n' + idx));
+    }[m])); }
     function formatCurrency(v){ if(v === '' || v === null || v === undefined || isNaN(+v)) return ''; const n=Number(v); return `৳ ${n.toFixed(2)}`; }
     function hexToRgba(hex, alpha){ if(!hex) return `rgba(0,0,0,${alpha})`; const h=hex.replace('#',''); const bigint=parseInt(h,16); const r=(bigint>>16)&255; const g=(bigint>>8)&255; const b=bigint&255; return `rgba(${r},${g},${b},${alpha})`; }
 
@@ -452,6 +458,7 @@
       tbody.innerHTML = '';
 
       rows.forEach((row, i) => {
+        const uid = uidOf(row, row._idx);
         const tr = document.createElement('tr');
         const countForId = counts[(row.orderId||'').toString()] || 0;
 
@@ -476,8 +483,8 @@
           <td>${row.orderDateTime ? fmtDate(row.orderDateTime) : ''}</td>
           <td class="hide-sm">${row.createdAt ? fmtDate(row.createdAt) : ''}</td>
           <td class="actions">
-            <button class="btn btn-success" data-idx="${row._idx}" data-action="edit">এডিট</button>
-            <button class="btn btn-danger" data-idx="${row._idx}" data-action="delete">ডিলিট</button>
+            <button class="btn btn-success" data-uid="${uid}" data-action="edit">এডিট</button>
+            <button class="btn btn-danger" data-uid="${uid}" data-action="delete">ডিলিট</button>
           </td>
         `;
 
@@ -494,15 +501,17 @@
         tbody.appendChild(tr);
       });
 
-      // attach delegated handlers for edit/delete
-      tbody.querySelectorAll('button[data-action]').forEach(btn => {
-        const idx = +btn.getAttribute('data-idx');
-        const action = btn.getAttribute('data-action');
-        btn.onclick = (e) => {
-          if(action === 'edit') edit(idx);
-          if(action === 'delete') remove(idx);
-        };
-      });
+      // attach delegated handlers for edit/delete by UID (stable even after sorting/paging)
+        tbody.querySelectorAll('button[data-action]').forEach(btn => {
+          const uid = btn.getAttribute('data-uid');
+          const action = btn.getAttribute('data-action');
+          btn.onclick = (e) => {
+            const idx = store.list.findIndex((r, i) => uidOf(r, i) === uid);
+            if(idx === -1){ toast('রেকর্ড পাওয়া যায়নি — হয়তো তালিকা পরিবর্তিত হয়েছে'); return; }
+            if(action === 'edit') edit(idx);
+            if(action === 'delete') remove(idx);
+          };
+        });
 
       // pagination
       const pg = document.getElementById('pagination');
@@ -558,6 +567,7 @@
     // ====== Form submit handling (create or update) ======
     async function onFormSubmit(e){
       e.preventDefault();
+      const form = e.target;
       const name = document.getElementById('name').value.trim();
       const phone = document.getElementById('phone').value.trim();
       const school = document.getElementById('school').value.trim();
@@ -617,7 +627,6 @@
             toast('অফলাইনে সংরক্ষণ করা হয়েছে — সার্ভারে পরে সিঙ্ক হবে');
           }
         }
-        e.target.reset(); document.getElementById('editingIndex').value = ''; document.getElementById('orderPreview').textContent = '';
       }catch(err){
         console.error('form submit error', err);
         // fallback offline enqueue with better distinction between update/create
@@ -641,6 +650,10 @@
           enqueueOp({ type: 'create', tempId, item: localItem });
           toast('অফলাইনে লোকালি সংরক্ষণ করা হয়েছে (ত্রুটি ঘটেছে)');
         }
+      }finally{
+        try{ form.reset(); }catch(_){ }
+        document.getElementById('editingIndex').value = '';
+        document.getElementById('orderPreview').textContent = '';
       }
     }
 
@@ -692,7 +705,8 @@
             const orderDateTime = orderTimeIdx > -1 ? Date.parse(cols[orderTimeIdx]) : Date.now();
             const createdAt = createdIdx > -1 ? Date.parse(cols[createdIdx]) : Date.now();
             if(name && orderId){
-              store.list.push({ name, phone, school, orderName, amount: isNaN(amount)?0:amount, orderId, orderDateTime: isNaN(orderDateTime)?Date.now():orderDateTime, createdAt: isNaN(createdAt)?Date.now():createdAt });
+              const generatedTempId = 'tmp-'+Date.now()+'-'+Math.floor(Math.random()*9000+1000);
+              store.list.push({ name, phone, school, orderName, amount: isNaN(amount)?0:amount, orderId, orderDateTime: isNaN(orderDateTime)?Date.now():orderDateTime, createdAt: isNaN(createdAt)?Date.now():createdAt, tempId: generatedTempId });
               count++;
             }
           });
