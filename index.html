@@ -249,6 +249,47 @@
   <div class="toast" id="toast"></div>
 
   <script>
+    const API_URL = 'https://oder-gjta.onrender.com'; // ব্যাকএন্ড URL
+
+async function loadOrders() {
+  const res = await fetch(API_URL);
+  const orders = await res.json();
+  console.log('Orders:', orders);
+  // এখানে তুমি orders দিয়ে HTML টেবিলে রেন্ডার করতে পারো
+}
+
+async function saveOrder(order) {
+  const res = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(order)
+  });
+  const data = await res.json();
+  console.log('Saved:', data);
+  loadOrders();
+}
+
+async function updateOrder(id, order) {
+  const res = await fetch(`${API_URL}/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(order)
+  });
+  const data = await res.json();
+  console.log('Updated:', data);
+  loadOrders();
+}
+
+async function deleteOrder(id) {
+  const res = await fetch(`${API_URL}/${id}`, { method: 'DELETE' });
+  const data = await res.json();
+  console.log(data.message);
+  loadOrders();
+}
+
+// Initial load
+loadOrders();
+
     // ===== Utility: Toast =====
     function toast(msg){
       const t = document.getElementById('toast');
