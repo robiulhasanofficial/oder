@@ -1,36 +1,40 @@
 // server.js
-const express = require("express");
-const cors = require("cors");
-const mongoose = require("mongoose");
+require('dotenv').config();
+const path = require('path');
+const express = require('express');
+const http = require('http');
+const cors = require('cors');
+const mongoose = require('mongoose');
+const { Server } = require('socket.io');
 
 const app = express();
+const server = http.createServer(app);
 
-// CORS: প্রয়োজনমত origin সীমাবদ্ধ করুন
-app.use(cors());
-app.use(express.json());
-
-// ====================
-// Config / Env
-// ====================
-const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/orders_db";
-const PORT = process.env.PORT || 3000;
-
-// ====================
-// MongoDB Connection
-// ====================
-mongoose.connect(MONGO_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-})
-.then(() => console.log("✅ MongoDB Connected"))
-.catch(err => {
-  console.error("❌ MongoDB Connection Error:", err);
-  process.exit(1);
+// Socket.io সেটআপ — production-এ origin কনফিগার করুন
+const io = new Server(server, {
+  cors: {
+    origin: true,
+    methods: ['GET','POST','PUT','DELETE']
+  }
 });
 
-// ====================
-// Order Schema & Model
-// ====================
+// Middleware
+app.use(express.json());
+app.use(cors());
+
+// Serve frontend from /public
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Config
+const PORT = process.env.PORT || 3000;
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/orders_db';
+
+// Mongoose connect
+mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(()=> console.log('✅ MongoDB connected'))
+  .catch(err => { console.error('MongoDB connection error', err); process.exit(1); });
+
+// Schema + Model
 const orderSchema = new mongoose.Schema({
   name: { type: String, required: true },
   phone: String,
@@ -39,112 +43,109 @@ const orderSchema = new mongoose.Schema({
   orderId: { type: String, required: true, index: true },
   amount: { type: Number, default: 0 },
   orderDateTime: { type: Date, default: Date.now },
-  status: { type: String, default: "pending" }
+  status: { type: String, default: 'pending' }
 }, { timestamps: true });
 
-const Order = mongoose.model("Order", orderSchema);
+const Order = mongoose.model('Order', orderSchema);
 
-// ====================
-// Simple root health-check
-// ====================
-app.get("/", (req, res) => {
-  res.json({ success: true, message: "Order API is running" });
-});
+// Health
+app.get('/health', (req,res) => res.json({ ok:true, now: new Date() }));
 
-// ====================
-// API Routes (prefixed with /orders)
-// ====================
-
-// Add New Order
-app.post("/orders", async (req, res) => {
+// GET /orders
+app.get('/orders', async (req,res) => {
   try {
-    const payload = req.body;
-    if(!payload.name || !payload.orderId) {
-      return res.status(400).json({ success:false, message: "name এবং orderId প্রয়োজন" });
-    }
-    const newOrder = new Order(payload);
-    await newOrder.save();
-    // Important: return the created order object directly (not wrapped)
-    return res.status(201).json(newOrder);
-  } catch (err) {
-    console.error('POST /orders error', err);
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// Get All Orders
-app.get("/orders", async (req, res) => {
-  try {
-    const orders = await Order.find().sort({ createdAt: -1 });
+    const orders = await Order.find().sort({ createdAt: -1 }).lean();
     res.json(orders);
-  } catch (err) {
+  } catch(err) {
     console.error('GET /orders error', err);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Update Order (by Mongo _id)
-app.put("/orders/:id", async (req, res) => {
+// POST /orders
+app.post('/orders', async (req,res) => {
   try {
-    const updated = await Order.findByIdAndUpdate(req.params.id, req.body, { new: true });
-    if(!updated) return res.status(404).json({ success:false, message: "Order পাওয়া যায়নি" });
-    // return the updated document directly
-    return res.json(updated);
-  } catch (err) {
+    const payload = req.body || {};
+    if(!payload.name || !payload.orderId) return res.status(400).json({ error: 'name and orderId required' });
+    const created = await Order.create(payload);
+    const obj = created.toObject();
+    io.emit('order:created', obj); // realtime broadcast
+    res.status(201).json(obj);
+  } catch(err) {
+    console.error('POST /orders error', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /orders/:id
+app.put('/orders/:id', async (req,res) => {
+  try {
+    const id = req.params.id;
+    const updated = await Order.findByIdAndUpdate(id, req.body, { new: true }).lean();
+    if(!updated) return res.status(404).json({ error: 'Order not found' });
+    io.emit('order:updated', updated);
+    res.json(updated);
+  } catch(err) {
     console.error('PUT /orders/:id error', err);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Delete Order by Mongo _id
-app.delete("/orders/:id", async (req, res) => {
+// DELETE /orders/:id
+app.delete('/orders/:id', async (req,res) => {
   try {
-    const deleted = await Order.findByIdAndDelete(req.params.id);
-    if(!deleted) return res.status(404).json({ success:false, message: "Order পাওয়া যায়নি" });
-    return res.json({ success: true, message: "Order deleted successfully!" });
-  } catch (err) {
+    const id = req.params.id;
+    const deleted = await Order.findByIdAndDelete(id).lean();
+    if(!deleted) return res.status(404).json({ error: 'Order not found' });
+    io.emit('order:deleted', String(id)); // broadcast deleted id as string
+    res.json({ success: true, deletedId: String(id) });
+  } catch(err) {
     console.error('DELETE /orders/:id error', err);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// --- Additional convenience endpoints so client fallbacks succeed ---
-
-// DELETE by orderId via query param: DELETE /orders?orderId=YY-...
-app.delete("/orders", async (req, res) => {
+// Convenience fallback endpoints (optional but helpful)
+app.delete('/orders', async (req,res) => {
   try {
     const { orderId } = req.query;
-    if(!orderId) return res.status(400).json({ success:false, message: "orderId query parameter required" });
-    const deleted = await Order.findOneAndDelete({ orderId });
-    if(!deleted) return res.status(404).json({ success:false, message: "Order পাওয়া যায়নি (by orderId)" });
-    return res.json({ success: true, message: "Order deleted by orderId", data: deleted });
-  } catch (err) {
+    if(!orderId) return res.status(400).json({ error: 'orderId query parameter required' });
+    const deleted = await Order.findOneAndDelete({ orderId }).lean();
+    if(!deleted) return res.status(404).json({ error: 'Order not found (by orderId)' });
+    io.emit('order:deleted', String(deleted._id));
+    res.json({ success: true, data: deleted });
+  } catch(err) {
     console.error('DELETE /orders (by query) error', err);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// POST /orders/delete  with body { id, orderId }  (fallback that some clients use)
-app.post("/orders/delete", async (req, res) => {
+app.post('/orders/delete', async (req,res) => {
   try {
     const { id, orderId } = req.body || {};
     let deleted = null;
-    if(id){
-      deleted = await Order.findByIdAndDelete(id);
-    } else if(orderId){
-      deleted = await Order.findOneAndDelete({ orderId });
-    } else {
-      return res.status(400).json({ success:false, message: "Provide id or orderId in body" });
-    }
-    if(!deleted) return res.status(404).json({ success:false, message: "Order পাওয়া যায়নি" });
-    return res.json({ success: true, message: "Order deleted (fallback)", data: deleted });
-  } catch (err) {
+    if(id) deleted = await Order.findByIdAndDelete(id).lean();
+    else if(orderId) deleted = await Order.findOneAndDelete({ orderId }).lean();
+    else return res.status(400).json({ error:'provide id or orderId' });
+    if(!deleted) return res.status(404).json({ error:'Order not found' });
+    io.emit('order:deleted', String(deleted._id));
+    res.json({ success:true, data: deleted });
+  } catch(err) {
     console.error('POST /orders/delete error', err);
-    res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ====================
-// Start Server
-// ====================
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// socket connection
+io.on('connection', socket => {
+  console.log('🔌 socket connected', socket.id);
+  socket.on('disconnect', () => console.log('❌ socket disconnected', socket.id));
+});
+
+// Fallback for SPA: serve index.html
+app.get('*', (req,res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// start server
+server.listen(PORT, () => console.log(`🚀 Server listening on port ${PORT}`));
