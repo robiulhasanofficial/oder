@@ -208,10 +208,216 @@ async function remove(idx){
 }
 
 // ====== Form submit handling (create or update) ======
-async function onFormSubmit(e){ /* keep your existing function unchanged (works with queue rules) */ }
+async function onFormSubmit(e){
+  e.preventDefault();
+  const idxRaw = document.getElementById('editingIndex') ? document.getElementById('editingIndex').value : '';
+  const editingIndex = idxRaw === '' ? null : Number(idxRaw);
+  const name = (document.getElementById('name').value || '').trim();
+  const phone = (document.getElementById('phone').value || '').trim();
+  const school = (document.getElementById('school').value || '').trim();
+  const orderIdVal = (document.getElementById('orderId').value || '').trim();
+  const orderName = (document.getElementById('orderName').value || '').trim();
+  const amountRaw = (document.getElementById('amount').value || '').trim();
+  const amount = amountRaw === '' ? '' : Number(amountRaw);
+
+  if(!name){
+    toast('নাম প্রয়োজন');
+    return;
+  }
+
+  // build order payload (client-side)
+  const now = new Date().toISOString();
+  const orderPayload = {
+    name, phone, school,
+    orderId: orderIdVal,
+    orderName,
+    amount: amount === '' ? '' : amount,
+    orderDateTime: now,
+    createdAt: now
+  };
+
+  // Update existing
+  if(editingIndex !== null && !isNaN(editingIndex)){
+    const existing = store.list[editingIndex];
+    if(!existing){ toast('রেকর্ড পাওয়া যায়নি'); return; }
+    const serverId = existing._id || existing.id;
+    // merge changes
+    const merged = { ...existing, ...orderPayload, updatedAt: new Date().toISOString() };
+    // optimistic UI update
+    store.list[editingIndex] = merged;
+    store.save();
+    render();
+    document.getElementById('orderForm').reset();
+    document.getElementById('editingIndex').value = '';
+    document.getElementById('orderPreview').textContent = '';
+    // If server id exists -> try server update, else enqueue update op
+    if(serverId && navigator.onLine){
+      try{
+        await updateOrderOnServer(serverId, merged);
+        toast('সার্ভারে আপডেট করা হয়েছে');
+      }catch(err){
+        console.warn('update failed, queueing', err);
+        enqueueOp({ type: 'update', id: serverId, item: merged });
+        setServerStatus(false);
+      }
+    } else {
+      // no server id -> enqueue update (this covers local-only records too)
+      enqueueOp({ type: 'update', id: serverId, item: merged });
+      toast('লokal আপডেট কিউতে যুক্ত হয়েছে');
+    }
+    return;
+  }
+
+  // Create new
+  const tempId = `temp-${Date.now()}-${Math.floor(Math.random()*9000+1000)}`;
+  const item = { ...orderPayload, tempId, createdAt: now };
+
+  // Add locally immediately
+  store.list.unshift(item);
+  store.save();
+  render();
+  document.getElementById('orderForm').reset();
+  document.getElementById('editingIndex').value = '';
+  document.getElementById('orderPreview').textContent = '';
+  // Try to create on server if online
+  if(navigator.onLine){
+    try{
+      const created = await createOrderOnServer(item);
+      // replace local temp item with created (match by tempId)
+      const idx = store.list.findIndex(r => r.tempId === tempId);
+      if(idx > -1){ store.list[idx] = created; store.save(); render(); }
+      toast('নতুন অর্ডার সার্ভারে সেভ হয়েছে');
+    }catch(err){
+      console.warn('create failed, enqueueing', err);
+      enqueueOp({ type: 'create', item, tempId });
+      setServerStatus(false);
+    }
+  } else {
+    // offline -> enqueue create
+    enqueueOp({ type: 'create', item, tempId });
+    toast('অফলাইনে — লোকাল ডেটা রেকর্ড করা হয়েছে এবং পরে সিঙ্ক হবে');
+  }
+}
 
 // ====== CSV Export / Import ======
-/* keep your existing exportCsv() and importCsvFromFile() functions (no change) */
+function exportCsv(e){
+  // create CSV from store.list
+  try{
+    const rows = store.list.slice(); // copy
+    if(!rows || !rows.length){ toast('রফতানি করার জন্য ডেটা নেই'); return; }
+    const headers = ['name','phone','school','orderId','orderName','amount','orderDateTime','createdAt','_id','tempId'];
+    const escape = (v) => {
+      if(v === null || v === undefined) return '';
+      const s = String(v);
+      if(s.includes('"') || s.includes(',') || s.includes('\n')) return `"${s.replace(/"/g,'""')}"`;
+      return s;
+    };
+    const lines = [headers.join(',')];
+    rows.forEach(r => {
+      const line = headers.map(h => escape(r[h] !== undefined ? r[h] : '')).join(',');
+      lines.push(line);
+    });
+    const csv = '\uFEFF' + lines.join('\n'); // BOM for Excel
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `orders_${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    toast('CSV ডাউনলোড শুরু হয়েছে');
+  }catch(err){
+    console.error('exportCsv failed', err);
+    toast('CSV রপ্তানি ব্যর্থ হয়েছে');
+  }
+}
+
+// Simple robust CSV parser (handles quoted fields)
+function parseCsvText(text){
+  const rows = [];
+  let cur = '';
+  let row = [];
+  let inQuotes = false;
+  for(let i=0;i<text.length;i++){
+    const ch = text[i];
+    if(inQuotes){
+      if(ch === '"'){
+        if(text[i+1] === '"'){ cur += '"'; i++; } else { inQuotes = false; }
+      } else {
+        cur += ch;
+      }
+    } else {
+      if(ch === '"'){ inQuotes = true; }
+      else if(ch === ','){ row.push(cur); cur = ''; }
+      else if(ch === '\r'){ /* ignore */ }
+      else if(ch === '\n'){ row.push(cur); rows.push(row); row = []; cur = ''; }
+      else { cur += ch; }
+    }
+  }
+  // last
+  if(cur !== '' || row.length){
+    row.push(cur);
+    rows.push(row);
+  }
+  return rows;
+}
+
+async function importCsvFromFile(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try{
+        const text = ev.target.result;
+        // normalize and parse
+        const cleaned = text.replace(/\uFEFF/g,'').trim();
+        const parsed = parseCsvText(cleaned);
+        if(!parsed || !parsed.length) { toast('CSV খালি বা অপ্রচলিত।'); resolve(); return; }
+        // first row -> headers
+        const headers = parsed[0].map(h => (h||'').trim());
+        const items = [];
+        for(let i=1;i<parsed.length;i++){
+          const row = parsed[i];
+          if(row.length === 1 && row[0] === '') continue; // skip empty line
+          const obj = {};
+          for(let j=0;j<headers.length;j++){
+            const key = headers[j];
+            obj[key] = (row[j] !== undefined) ? row[j] : '';
+          }
+          // minimal mapping: amount -> number if possible
+          if(obj.amount !== undefined && obj.amount !== '') {
+            const num = Number(String(obj.amount).replace(/[^0-9.-]+/g,''));
+            obj.amount = isNaN(num) ? obj.amount : num;
+          }
+          // ensure createdAt/orderDateTime
+          const now = new Date().toISOString();
+          obj.createdAt = obj.createdAt || now;
+          obj.orderDateTime = obj.orderDateTime || now;
+          // assign a tempId to ensure queue match
+          obj.tempId = `imp-${Date.now()}-${Math.floor(Math.random()*9000+1000)}`;
+          items.push(obj);
+        }
+        // add items locally and enqueue create ops
+        if(items.length === 0){ toast('কোনো রেকর্ড মেলে নি'); resolve(); return; }
+        // add to front to show newest first
+        items.reverse().forEach(it => {
+          store.list.unshift(it);
+          enqueueOp({ type: 'create', item: it, tempId: it.tempId });
+        });
+        store.save();
+        render();
+        toast(`${items.length}টি রেকর্ড ইম্পোর্ট করা হয়েছে (সিঙ্কের জন্য কিউতে যোগ করা হয়েছে)`); 
+        // try immediate sync if online
+        if(navigator.onLine) setTimeout(processQueue, 800);
+        resolve();
+      }catch(err){
+        console.error('import parse failed', err);
+        reject(err);
+      }
+    };
+    reader.onerror = (err) => { reject(err); };
+    reader.readAsText(file, 'utf-8');
+  });
+}
 
 // ====== Polling + Socket listeners ======
 let pollTimer = null;
@@ -267,6 +473,7 @@ async function init(){ bindUI(); store.load(); await loadOrdersAndRender(); star
 
 // expose some functions globally (but avoid polluting too much)
 window.edit = edit; window.remove = (idx)=> remove(idx); window.autoId = autoId;
+window.exportCsv = exportCsv; window.importCsvFromFile = importCsvFromFile; window.onFormSubmit = onFormSubmit;
 
 // Start
 init();
