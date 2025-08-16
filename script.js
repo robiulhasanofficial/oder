@@ -456,6 +456,7 @@ function initSyncAnnounce(){
 }
 
 // ================= Init =================
+
 store.load();
 render();
 initSyncAnnounce();
