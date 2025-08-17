@@ -62,10 +62,13 @@ const store = {
 
 // ================= Helpers =================
 function fmtDate(ts){
-  if(!ts) return '';
+if(!ts) return '';
   const d = new Date(ts);
   const pad = n => n.toString().padStart(2,'0');
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  let hours = d.getHours();
+  const ampm = hours >= 12 ? 'PM' : 'AM';
+  const hour12 = hours % 12 === 0 ? 12 : hours % 12;
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(hour12)}:${pad(d.getMinutes())} ${ampm}`;
 }
 function autoId(){
   const d = new Date();
@@ -217,6 +220,54 @@ function remove(idx){
     render();
     toast('মুছে ফেলা হয়েছে 🗑️');
   }
+}
+
+
+// ================= Auto-fill on OrderId typing =================
+function debounce(fn, wait){
+  let t;
+  return function(...args){
+    clearTimeout(t);
+    t = setTimeout(()=>fn.apply(this, args), wait);
+  };
+}
+
+function fillByOrderId(orderId){
+  if(!orderId) return;
+  // exact match করে খোঁজ
+  const matches = store.list.filter(o => (o.orderId || '').toString() === orderId);
+  if(matches.length === 0){
+    // যদি চাইলে এখানে ফিল্ডগুলো ক্লিয়ার করতে পারো (কমেন্টেড)
+    // document.getElementById('name').value = '';
+    // document.getElementById('phone').value = '';
+    // document.getElementById('school').value = '';
+    return;
+  }
+
+  // যদি একাধিক মিলে, সর্বশেষ(createdAt || orderDateTime) টেকনিক দিয়ে বেছে নাও
+  matches.sort((a,b) => {
+    const ta = a.createdAt || a.orderDateTime || 0;
+    const tb = b.createdAt || b.orderDateTime || 0;
+    return tb - ta;
+  });
+  const existing = matches[0];
+
+  // ফর্মে অটোমেটিক ভরবে
+  // যদি তুমি চাইলে কেবল তখনই ভরাও যখন ইনপুটগুলো খালি — সেটাও করা যায় (নীচে আরেকটি উদাহরণ আছে)
+  document.getElementById('name').value = existing.name || '';
+  document.getElementById('phone').value = existing.phone || '';
+  document.getElementById('school').value = existing.school || '';
+  toast('আগের তথ্য অটো-ফিল হয়েছে ✅');
+}
+
+const debouncedFill = debounce((val) => fillByOrderId(val.trim()), 250);
+
+const orderIdEl = document.getElementById('orderId');
+if(orderIdEl){
+  // টাইপিং হিসেবে দ্রুত ফিডব্যাক চাইলে 'input' ব্যবহার কর
+  orderIdEl.addEventListener('input', (e) => debouncedFill(e.target.value));
+  // অথবা blur-তে একবারে চেক করতেও রাখলাম
+  orderIdEl.addEventListener('blur', (e) => fillByOrderId(e.target.value.trim()));
 }
 
 // ================= Events (form etc) =================
