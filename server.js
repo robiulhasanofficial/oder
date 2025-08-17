@@ -3,74 +3,22 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
-const cookieParser = require('cookie-parser');
-const cookie = require('cookie'); // for socket handshake cookie parsing
 
 const app = express();
 
 // Config: Change env var in production if you don't want the password hard-coded.
 const SITE_PASSWORD = process.env.SITE_PASSWORD || '664249';
 
-// Middleware
-app.use(cors()); // production-এ origin সীমাবদ্ধ করো
+// CORS (production-এ origin সীমাবদ্ধ করো)
+app.use(cors()); 
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // login form support
-app.use(cookieParser());
-
-// ----------------------
-// Routes that must be public: /login (GET/POST)
-// ----------------------
-app.get('/login', (req, res) => {
-  // simple login page (you can replace with your own)
-  res.send(`
-    <!doctype html>
-    <html>
-      <head>
-        <meta charset="utf-8"/>
-        <meta name="viewport" content="width=device-width,initial-scale=1"/>
-        <title>Login</title>
-        <style>
-          body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;display:flex;min-height:100vh;align-items:center;justify-content:center;background:#f7f7f7;margin:0}
-          form{background:#fff;padding:24px;border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,0.08);width:320px}
-          input{width:100%;padding:10px;margin:8px 0;border:1px solid #ddd;border-radius:6px}
-          button{width:100%;padding:10px;border:0;border-radius:6px;background:#111;color:#fff;font-weight:600}
-          .hint{font-size:13px;color:#666;margin-bottom:8px}
-        </style>
-      </head>
-      <body>
-        <form method="POST" action="/login">
-          <div class="hint">Enter site password to continue</div>
-          <input name="password" type="password" placeholder="Password" required />
-          <button type="submit">Login</button>
-        </form>
-      </body>
-    </html>
-  `);
-});
-
-app.post('/login', (req, res) => {
-  const pw = (req.body && (req.body.password || req.body.pw)) || '';
-  if (pw === SITE_PASSWORD) {
-    // set httpOnly cookie (simple approach). For production, use signed cookie/session.
-    res.cookie('site_auth', SITE_PASSWORD, {
-      httpOnly: true,
-      sameSite: 'lax',
-      // secure: true, // enable in production (HTTPS)
-      maxAge: 1000 * 60 * 60 * 24 // 1 day
-    });
-    return res.redirect('/'); // logged in -> go to root
-  }
-  return res.status(401).send('Invalid password');
-});
 
 // ----------------------
 // HTTP (Express) password middleware
 // ----------------------
 function checkPasswordHttp(req, res, next) {
   try {
-    // Allow the login page and assets under /login to be accessed without password
-    if (req.path && req.path.startsWith('/login')) return next();
-
+    // পাসওয়ার্ড চেক করার জায়গা: header বা query
     // header: x-site-password  অথবা Authorization: Bearer <pw>
     const headerPw = req.get('x-site-password') ||
       (req.get('authorization') ? req.get('authorization').split(' ')[1] : null);
@@ -78,22 +26,22 @@ function checkPasswordHttp(req, res, next) {
     // query: ?pw=664249  অথবা ?password=664249
     const queryPw = req.query.pw || req.query.password;
 
-    // cookie: site_auth
-    const cookiePw = req.cookies && req.cookies.site_auth;
-
-    if (headerPw === SITE_PASSWORD || queryPw === SITE_PASSWORD || cookiePw === SITE_PASSWORD) {
+    if (headerPw === SITE_PASSWORD || queryPw === SITE_PASSWORD) {
       return next();
     }
 
-    // If not authorized, send 401 and a helpful message (browser will show it).
-    res.status(401).send('Unauthorized — visit /login or provide ?pw=YOUR_PASSWORD or header x-site-password or Authorization: Bearer <pw>');
+    // OPTIONAL: allow a simple health check without password (uncomment if needed)
+    // if (req.path === '/health') return res.send({ ok: true });
+
+    // block if no correct password
+    res.status(401).send('Unauthorized — provide password via query ?pw=YOUR_PASSWORD or header x-site-password or Authorization: Bearer <pw>');
   } catch (e) {
     console.error('password middleware error', e);
     res.status(500).send('Server error');
   }
 }
 
-// apply password middleware BEFORE serving static files / routes that should be protected
+// apply password middleware BEFORE serving static files / routes
 app.use(checkPasswordHttp);
 
 // serve static files (only accessible when password provided)
@@ -110,21 +58,16 @@ const io = new Server(server, {
 });
 
 // Socket.IO authentication middleware (handshake)
-// Accepts: socket.handshake.auth.password, query pw, header x-site-password, or cookie site_auth
 io.use((socket, next) => {
   try {
+    // Try multiple places: socket.handshake.auth (recommended), query, or headers
     const authPw = (socket.handshake.auth && socket.handshake.auth.password) ||
                    socket.handshake.query.pw ||
                    socket.handshake.query.password ||
-                   (socket.handshake.headers && socket.handshake.headers['x-site-password']) ||
-                   (socket.handshake.headers && socket.handshake.headers.authorization ? socket.handshake.headers.authorization.split(' ')[1] : null);
+                   socket.handshake.headers['x-site-password'] ||
+                   (socket.handshake.headers['authorization'] ? socket.handshake.headers['authorization'].split(' ')[1] : null);
 
-    // parse cookie from handshake headers (if present)
-    const cookiesHeader = socket.handshake.headers && socket.handshake.headers.cookie;
-    const parsedCookies = cookiesHeader ? cookie.parse(cookiesHeader) : {};
-    const cookiePw = parsedCookies && parsedCookies.site_auth;
-
-    if (authPw === SITE_PASSWORD || cookiePw === SITE_PASSWORD) {
+    if (authPw === SITE_PASSWORD) {
       return next();
     }
 
