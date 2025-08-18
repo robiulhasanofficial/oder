@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>লগইন পেজ</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="login-container" role="main" aria-labelledby="loginHeading">
+    <h2 id="loginHeading">লগইন করুন</h2>
+
+    <form id="loginForm" autocomplete="off" novalidate>
+      <label for="username">ইউজারনেম:</label>
+      <input type="text" id="username" name="username" required autocomplete="username" />
+
+      <label for="password">পাসওয়ার্ড:</label>
+      <input type="password" id="password" name="password" required minlength="4" autocomplete="current-password" />
+
+      <button id="submitBtn" type="submit">লগইন</button>
+    </form>
+
+    <p id="errorMsg" class="error-msg" role="alert" aria-live="assertive"></p>
+  </div>
+
+  <script>
+    (function () {
+      const form = document.getElementById('loginForm');
+      const errorMsg = document.getElementById('errorMsg');
+      const submitBtn = document.getElementById('submitBtn');
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorMsg.textContent = '';
+
+        const username = form.username.value.trim();
+        const password = form.password.value;
+
+        if (!username || !password) {
+          errorMsg.textContent = 'দয়া করে ইউজারনেম ও পাসওয়ার্ড পূরণ করুন।';
+          return;
+        }
+
+        // prevent double submit
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'লগইন হচ্ছে...';
+
+        try {
+          const res = await fetch('/login', {
+            method: 'POST',
+            credentials: 'include', // <--- গুরুত্বপূর্ণ: cookie-ভিত্তিক সেশন হলে রাখবে
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+          });
+
+          // যদি সার্ভার JSON না পাঠায়, catch করবে
+          const data = await res.json().catch(() => ({}));
+
+          if (res.ok && data.success) {
+            // সফল হলে রিডাইরেক্ট
+            window.location.href = '/index.html';
+          } else {
+            // সার্ভার দ্বারা প্রদত্ত মেসেজ দেখাও যদি থাকে
+            errorMsg.textContent = data.error || 'ইউজারনেম বা পাসওয়ার্ড ভুল!';
+          }
+        } catch (err) {
+          console.error('Network/login error:', err);
+          errorMsg.textContent = 'নেটওয়ার্ক সমস্যার কারণে লগইন সফল হয়নি। পরে চেষ্টা করুন।';
+        } finally {
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'লগইন';
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
