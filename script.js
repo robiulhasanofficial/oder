@@ -563,12 +563,12 @@ document.getElementById('btnClearAll').addEventListener('click', ()=> {
 // Right-click disable
 document.addEventListener('contextmenu', e => e.preventDefault());
 
-// F12, Ctrl+Shift+I, Ctrl+Shift+J block
+// F12, Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+U block
 document.addEventListener('keydown', e => {
   if (
     e.key === 'F12' ||
     (e.ctrlKey && e.shiftKey && ['I','J','C'].includes(e.key.toUpperCase())) ||
-    (e.ctrlKey && e.key === 'U') // View Source block
+    (e.ctrlKey && e.key.toUpperCase() === 'U') // View Source
   ) {
     e.preventDefault();
     alert('Inspect blocked!');
