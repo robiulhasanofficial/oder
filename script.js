@@ -527,37 +527,39 @@ function initSyncAnnounce(){
     try { localStorage.setItem(SYNC_KEY, JSON.stringify({ ...payload, __ts: Date.now() })); setTimeout(()=>localStorage.removeItem(SYNC_KEY), 800); } catch(e){}
   }
 }
-// বদলানো: "সব ডাটা মুছো" বাটনের জন্য কোড যাচাই + কনফার্মেশন
+
+//bbbbb
+// পুরোনো লিসেনার সরিয়ে দিন
+const oldBtn = document.getElementById('btnClearAll');
+oldBtn.replaceWith(oldBtn.cloneNode(true));
+
 document.getElementById('btnClearAll').addEventListener('click', ()=> {
-  // ইউজারের কাছ হতে কোড নাও
+  // ইউজারের কাছ থেকে কোড নাও
   const userCode = prompt('সব ডাটা মুছতে হলে অ্যাকসেস কোড লিখো:');
 
-  // যদি userCancel করে বা কিছু না দেয় -> বাতিল
   if(userCode === null) {
     toast('অ্যাকশন বাতিল করা হয়েছে');
     return;
   }
 
-  // কোড চেক (ACCESS_CODE ভেরিয়েবল স্ক্রিপ্টের উপরে ডিফাইন করা আছে)
+  // কোড যাচাই
   if(userCode !== ACCESS_CODE){
-    // ভুল কোড হলে কিছু মুছে হবে না
     alert('ভুল কোড — অ্যাক্সেস প্রত্যাখ্যাত।');
     toast('কোড ভুল — অনুমতি নেই');
     return;
   }
 
-  // কোড সঠিক হলে সর্বশেষ কনফার্ম করো
+  // কোড সঠিক হলে কনফার্মেশন
   if(!confirm('সব ডাটা স্থায়ীভাবে মুছে যাবে। নিশ্চিত?')) {
     toast('অ্যাকশন বাতিল করা হয়েছে');
     return;
   }
 
-  // মুছে ফেলো (store.clear() already calls publishChange())
+  // সব ডাটা মুছে ফেলো
   store.clear();
   render();
   toast('সব ডাটা মুছে ফেলা হয়েছে');
 });
-
 
 // ================= Init =================
 
