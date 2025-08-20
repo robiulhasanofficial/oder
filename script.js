@@ -560,6 +560,21 @@ document.getElementById('btnClearAll').addEventListener('click', ()=> {
   render();
   toast('সব ডাটা মুছে ফেলা হয়েছে');
 });
+// Right-click disable
+document.addEventListener('contextmenu', e => e.preventDefault());
+
+// F12, Ctrl+Shift+I, Ctrl+Shift+J block
+document.addEventListener('keydown', e => {
+  if (
+    e.key === 'F12' ||
+    (e.ctrlKey && e.shiftKey && ['I','J','C'].includes(e.key.toUpperCase())) ||
+    (e.ctrlKey && e.key === 'U') // View Source block
+  ) {
+    e.preventDefault();
+    alert('Inspect blocked!');
+  }
+});
+
 
 // ================= Init =================
 
